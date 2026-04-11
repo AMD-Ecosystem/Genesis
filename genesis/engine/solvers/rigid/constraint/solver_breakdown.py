@@ -227,8 +227,12 @@ def _func_check_early_exit(
             graph_counter[()] = 0
 
 
-@qd.kernel(gpu_graph=True, fastcache=gs.use_fastcache)
-def _kernel_solve_gpu_graph(
+# ============================================== Solve body dispatch ================================================
+
+
+@qd.kernel(graph=True, fastcache=gs.use_fastcache)
+def _kernel_solve_graph(
+    dofs_info: array_class.DofsInfo,
     entities_info: array_class.EntitiesInfo,
     dofs_state: array_class.DofsState,
     constraint_state: array_class.ConstraintState,
@@ -278,7 +282,7 @@ def func_solve_decomposed(
     if _n_iterations <= 0:
         return
     constraint_state.graph_counter.from_numpy(np.array(_n_iterations, dtype=np.int32))
-    _kernel_solve_gpu_graph(
+    _kernel_solve_graph(
         entities_info,
         dofs_state,
         constraint_state,
