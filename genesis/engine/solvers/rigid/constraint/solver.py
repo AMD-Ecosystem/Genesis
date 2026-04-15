@@ -1925,7 +1925,7 @@ def func_hessian_and_cholesky_factor_direct(
         qd.loop_config(
             name="hess_cholesky_factor_direct",
             serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL,
-            block_dim=32,
+            block_dim=64,  # AMD-tuned (df4c034); upstream uses 32
         )
         for i_b in range(_B):
             func_hessian_and_cholesky_factor_direct_batch(
@@ -1942,7 +1942,7 @@ def func_hessian_and_cholesky_factor_direct(
         if qd.static(static_rigid_sim_config.enable_tiled_cholesky_hessian):
             func_cholesky_factor_direct_tiled(constraint_state, rigid_global_info, static_rigid_sim_config)
         else:
-            qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, block_dim=32)
+            qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, block_dim=64)
             for i_b in range(_B):
                 func_cholesky_factor_direct_batch(i_b, constraint_state, rigid_global_info)
 
@@ -2963,7 +2963,9 @@ def func_update_gradient_tiled(
 
     if qd.static(static_rigid_sim_config.solver_type == gs.constraint_solver.CG):
         qd.loop_config(
-            name="update_gradient_tiled", serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, block_dim=32
+            name="update_gradient_tiled",
+            serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL,
+            block_dim=64,  # AMD-tuned (df4c034); upstream uses 32
         )
         for i_b in range(_B):
             func_solve_mass_batch(
@@ -3008,7 +3010,9 @@ def func_update_gradient(
     ):
         # CPU
         qd.loop_config(
-            name="update_gradient", serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, block_dim=32
+            name="update_gradient",
+            serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL,
+            block_dim=64,  # AMD-tuned (df4c034); upstream uses 32
         )
         for i_b in range(_B):
             func_update_gradient_batch(
@@ -3428,7 +3432,7 @@ def func_solve_body_monolith(
 ):
     _B = constraint_state.grad.shape[1]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, block_dim=32)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, block_dim=64)
     for i_b in range(_B):
         if constraint_state.n_constraints[i_b] > 0:
             for _ in range(rigid_global_info.iterations[None]):

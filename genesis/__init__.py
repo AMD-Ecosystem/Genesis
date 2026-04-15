@@ -291,13 +291,23 @@ def init(
             # FIXME: Turning off 'advanced_optimization' is causing issues on MacOS
             advanced_optimization=True,
             # This improves runtime speed by around 1%-5%, while it makes compilation up to 6x slower
-            cfg_optimization=False,
+            # AMD-tuned: enable cfg_optimization and fast_math by default
+            # for AMDGPU performance (df4c034 from 0.4.4.amd0-faster). Override
+            # fast_math via GS_FAST_MATH=0 if numerical issues are observed.
+            cfg_optimization=True,
             fast_math=not debug and os.environ.get("GS_FAST_MATH", "1") != "0",
             default_ip=qd_int,
             default_fp=qd_float,
             unrolling_limit=100,  # This threshold needs to be increased to accommodate gradient computation
             **qd_init_kwargs,
         )
+
+    # Dump LLVM IR and CHI IR to files for kernel inspection
+    # LLVM IR files: quadrants_kernel_amdgpu_llvm_ir_*.ll (cwd)
+    # Optimized LLVM IR files: quadrants_kernel_amdgpu_llvm_ir_optimized_*.ll (cwd)
+    # CHI IR files: /tmp/ir/<kernel_name>_<stage>.ll (via QD_DUMP_IR=1 env var)
+    qd.cfg.print_kernel_llvm_ir = True
+    qd.cfg.print_kernel_llvm_ir_optimized = True
 
     # Disable debug checks for quadrants
     qd.lang._template_mapper.__builtins__["__debug__"] = qd_debug
@@ -328,6 +338,7 @@ def init(
     if use_ndarray:
         logger.debug("[Quadrants] Enabling Quadrants dynamic array type to avoid scene-specific compilation.")
     if backend == _gs_backend.amdgpu:
+        qd.cfg.default_gpu_block_dim = 256
         logger.debug("[Quadrants] Beware AMD GPU backend is still experimental and may be unstable.")
 
     if _IS_OLD_TORCH:
