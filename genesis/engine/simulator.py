@@ -43,6 +43,7 @@ if TYPE_CHECKING:
 
     from .solvers.base_solver import Solver
 
+import quadrants as _qd
 
 RATE_CHECK_ERRNO = 10
 
@@ -292,6 +293,9 @@ class Simulator(RBC):
 
         if self.rigid_solver.is_active:
             self.rigid_solver.clear_external_force()
+        
+        if gs.backend == gs.amdgpu:
+            _qd.sync()
 
         self._sensor_manager.step()
 
