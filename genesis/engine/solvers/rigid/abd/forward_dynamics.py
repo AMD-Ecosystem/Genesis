@@ -589,6 +589,8 @@ def func_factor_mass(
 
         if qd.static(
             not static_rigid_sim_config.enable_tiled_cholesky_mass_matrix or static_rigid_sim_config.backend == gs.cpu
+            or static_rigid_sim_config.backend == gs.cpu
+            # or static_rigid_sim_config.backend == gs.amdgpu
         ):
             qd.loop_config(name="factor_mass", serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL)
             for i_e, i_b in qd.ndrange(n_entities, _B):
