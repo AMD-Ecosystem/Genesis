@@ -508,9 +508,6 @@ def func_compute_mass_matrix(
                         _row = qd.cast((qd.sqrt(8.0 * qd.cast(_pair_idx, gs.qd_float) + 1.0) + 1.0) // 2.0, qd.i32)
                         _col = _pair_idx - _row * (_row - 1) // 2
                         rigid_global_info.mass_mat[_e_start_m + _col, _e_start_m + _row, i_b] = rigid_global_info.mass_mat[_e_start_m + _row, _e_start_m + _col, i_b]
-                    # for i_d in range(entities_info.dof_start[i_e], entities_info.dof_end[i_e]):
-                    #     for j_d in range(i_d + 1, entities_info.dof_end[i_e]):
-                    #         rigid_global_info.mass_mat[i_d, j_d, i_b] = rigid_global_info.mass_mat[j_d, i_d, i_b]
                 else:
                     for i_d_, j_d_ in qd.static(
                         qd.ndrange(
@@ -592,8 +589,6 @@ def func_factor_mass(
 
         if qd.static(
             not static_rigid_sim_config.enable_tiled_cholesky_mass_matrix or static_rigid_sim_config.backend == gs.cpu
-            or static_rigid_sim_config.backend == gs.cpu
-            # or static_rigid_sim_config.backend == gs.amdgpu
         ):
             qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL)
             for i_e, i_b in qd.ndrange(n_entities, _B):
