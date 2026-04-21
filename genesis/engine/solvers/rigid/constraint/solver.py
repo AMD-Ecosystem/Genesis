@@ -3166,12 +3166,18 @@ def func_update_contact_force(
     for i_l, i_b in qd.ndrange(n_links, _B):
         links_state.contact_force[i_l, i_b] = qd.Vector.zero(gs.qd_float, 3)
 
+    # Parallelize over (contact, batch). Multiple contacts in the same batch
+    # may target the same link, so accumulation into `links_state.contact_force`
+    # must use atomic adds to be race-free under PARA_LEVEL.ALL.
+    n_c_max = collider_state.contact_data.normal.shape[0]
     qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
-    for i_b in range(_B):
-        const_start = constraint_state.n_constraints_equality[i_b] + constraint_state.n_constraints_frictionloss[i_b]
+    for i_c, i_b in qd.ndrange(n_c_max, _B):
+        if i_c < collider_state.n_contacts[i_b]:
+            const_start = (
+                constraint_state.n_constraints_equality[i_b]
+                + constraint_state.n_constraints_frictionloss[i_b]
+            )
 
-        # contact constraints should be after equality and frictionloss constraints and before joint limit constraints
-        for i_c in range(collider_state.n_contacts[i_b]):
             contact_data_normal = collider_state.contact_data.normal[i_c, i_b]
             contact_data_friction = collider_state.contact_data.friction[i_c, i_b]
             contact_data_link_a = collider_state.contact_data.link_a[i_c, i_b]
@@ -3184,14 +3190,11 @@ def func_update_contact_force(
                 n = d * contact_data_friction - contact_data_normal
                 force = force + n * constraint_state.efc_force[i_c * 4 + i_dir + const_start, i_b]
 
+            # `contact_data.force[i_c, i_b]` is unique per (i_c, i_b) -> no atomic needed.
             collider_state.contact_data.force[i_c, i_b] = force
 
-            links_state.contact_force[contact_data_link_a, i_b] = (
-                links_state.contact_force[contact_data_link_a, i_b] - force
-            )
-            links_state.contact_force[contact_data_link_b, i_b] = (
-                links_state.contact_force[contact_data_link_b, i_b] + force
-            )
+            qd.atomic_add(links_state.contact_force[contact_data_link_a, i_b], -force)
+            qd.atomic_add(links_state.contact_force[contact_data_link_b, i_b], force)
 
 
 @qd.kernel(fastcache=gs.use_fastcache)
