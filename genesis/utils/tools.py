@@ -108,40 +108,8 @@ class Timer:
         self.just_reset = False
 
     def stamp(self, msg="", _ratio=1.0):
-        return
-        if self.skip:
-            return
-
-        if self.qd_sync:
-            qd.sync()
-
-        self.cur_time = time.perf_counter()
-        self.msg_width = max(self.msg_width, len(msg))
-        step_time = 1000 * (self.cur_time - self.prev_time) * _ratio
-        accu_time = 1000 * (self.cur_time - self.init_time) * _ratio
-
-        if msg not in self.accu_log:
-            self.accu_log[msg] = [1, step_time, accu_time]
-        else:
-            self.accu_log[msg][0] += 1
-            self.accu_log[msg][1] += step_time
-            self.accu_log[msg][2] += accu_time
-
-        if self.level > 0:
-            prefix = " │  " * (self.level - 1)
-            if self.just_reset:
-                prefix += " ╭──"
-            else:
-                prefix += " ├──"
-        else:
-            prefix = ""
-
-        print(
-            f"{prefix}[{msg.ljust(self.msg_width)}] step: {step_time:5.3f}ms | accu: {accu_time:5.3f}ms | step_avg: {self.accu_log[msg][1] / self.accu_log[msg][0]:5.3f}ms | accu_avg: {self.accu_log[msg][2] / self.accu_log[msg][0]:5.3f}ms"
-        )
-
-        self.prev_time = time.perf_counter()
-        self.just_reset = False
+        # Call the actual implementation
+        self._stamp(msg, _ratio)
 
 
 timers = dict()

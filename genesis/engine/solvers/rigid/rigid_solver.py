@@ -260,6 +260,13 @@ class RigidSolver(KinematicSolver):
 
         self._ckpt = dict()
 
+        # Debug timing attributes
+        self._debug_kernel_timing = False
+        self._use_instrumented_kernels = False
+        self._use_detailed_timing = False
+        self._use_kernel_step_1_instrumented = False
+        self._use_forward_dynamics_breakdown = False
+
     def init_ckpt(self):
         pass
 
@@ -890,10 +897,22 @@ class RigidSolver(KinematicSolver):
             self.constraint_solver = ConstraintSolver(self)
 
     def substep(self, f):
-        # from genesis.utils.tools import create_timer
+        from genesis.utils.tools import create_timer
         from genesis.engine.couplers import SAPCoupler
+        import time
+
+        # Debug timing setup
+        debug_enabled = getattr(self, '_debug_kernel_timing', False)
+        global_step = getattr(self.sim, 'cur_step_global', 0) if hasattr(self, 'sim') else 0
+
+        if debug_enabled:
+            step_timer = create_timer("rigid_substep_detailed", level=1, qd_sync=True)
+            print(f"[DEBUG] Starting rigid substep {f} (global step: {global_step})")
+            print(f"[DEBUG] Timer created: {step_timer.__class__.__name__}, skip={step_timer.skip}")
 
         if self._requires_grad and f == 0:
+            if debug_enabled:
+                step_timer.stamp("adjoint_cache_save")
             kernel_save_adjoint_cache(
                 f=f,
                 dofs_state=self.dofs_state,
@@ -902,52 +921,441 @@ class RigidSolver(KinematicSolver):
                 static_rigid_sim_config=self._static_rigid_sim_config,
             )
 
-        kernel_step_1(
-            self.links_state,
-            self.links_info,
-            self.joints_state,
-            self.joints_info,
-            self.dofs_state,
-            self.dofs_info,
-            self.geoms_state,
-            self.geoms_info,
-            self.entities_state,
-            self.entities_info,
-            self._rigid_global_info,
-            self._static_rigid_sim_config,
-            self.constraint_solver.contact_island.contact_island_state,
-            self._is_forward_pos_updated,
-            self._is_forward_vel_updated,
-            self._is_backward,
-        )
+        if debug_enabled:
+            step_timer.stamp("kernel_step_1_start")
+
+        # Choose between detailed timing and standard kernel_step_1
+        if debug_enabled and hasattr(self, '_use_detailed_timing') and self._use_detailed_timing:
+            print(f"[DEBUG] Using DETAILED TIMING kernel_step_1 breakdown (step {global_step})")
+            step_timer.stamp("kernel_step_1_detailed_start")
+
+            # Create detailed sub-timer for individual operations
+            from genesis.utils.tools import create_timer
+            detail_timer = create_timer("kernel_step_1_details", level=2, qd_sync=True)
+
+            # Break down kernel_step_1 into individual timed operations
+            print(f"[DEBUG] === KERNEL_STEP_1 DETAILED BREAKDOWN (step {global_step}) ===")
+
+            # === STEP 1: Conditional func_update_cartesian_space ===
+            pos_updated = self._is_forward_pos_updated
+            print(f"[DEBUG] 1. CONDITIONAL: not is_forward_pos_updated")
+            print(f"[DEBUG]    is_forward_pos_updated: {pos_updated}")
+            print(f"[DEBUG]    not is_forward_pos_updated: {not pos_updated}")
+
+            if not pos_updated:
+                print(f"[DEBUG]    ✅ EXECUTING func_update_cartesian_space")
+                detail_timer.stamp("func_update_cartesian_space_start")
+                kernel_update_cartesian_space_only(
+                    self.links_state, self.links_info, self.joints_state, self.joints_info,
+                    self.dofs_state, self.dofs_info, self.geoms_info, self.geoms_state,
+                    self.entities_info, self._rigid_global_info, self._static_rigid_sim_config,
+                    self._is_backward
+                )
+                detail_timer.stamp("func_update_cartesian_space_complete")
+            else:
+                print(f"[DEBUG]    ❌ SKIPPING func_update_cartesian_space")
+
+            # === STEP 2: Conditional func_forward_velocity ===
+            vel_updated = self._is_forward_vel_updated
+            print(f"[DEBUG] 2. CONDITIONAL: not is_forward_vel_updated")
+            print(f"[DEBUG]    is_forward_vel_updated: {vel_updated}")
+            print(f"[DEBUG]    not is_forward_vel_updated: {not vel_updated}")
+
+            if not vel_updated:
+                print(f"[DEBUG]    ✅ EXECUTING func_forward_velocity")
+                detail_timer.stamp("func_forward_velocity_start")
+                kernel_forward_velocity_only(
+                    self.entities_info, self.links_info, self.links_state, self.joints_info,
+                    self.dofs_state, self._rigid_global_info, self._static_rigid_sim_config,
+                    self._is_backward
+                )
+                detail_timer.stamp("func_forward_velocity_complete")
+            else:
+                print(f"[DEBUG]    ❌ SKIPPING func_forward_velocity")
+
+            # === STEP 3: Always execute func_forward_dynamics ===
+            print(f"[DEBUG] 3. EXECUTING func_forward_dynamics (always executed)")
+
+            if hasattr(self, '_use_forward_dynamics_breakdown') and self._use_forward_dynamics_breakdown:
+                print(f"[DEBUG]    🔬 USING FORWARD DYNAMICS BREAKDOWN (7 sub-functions)")
+
+                # 3.1: Mass matrix computation
+                print(f"[DEBUG]    3.1. func_compute_mass_matrix")
+                detail_timer.stamp("func_compute_mass_matrix_start")
+                kernel_compute_mass_matrix_only(
+                    self.links_state, self.links_info, self.dofs_state, self.dofs_info,
+                    self.entities_info, self._rigid_global_info, self._static_rigid_sim_config,
+                    self._is_backward
+                )
+                detail_timer.stamp("func_compute_mass_matrix_complete")
+
+                # 3.2: Mass matrix factorization
+                print(f"[DEBUG]    3.2. func_factor_mass")
+                detail_timer.stamp("func_factor_mass_start")
+                kernel_factor_mass_only(
+                    self.entities_info, self.dofs_state, self.dofs_info,
+                    self._rigid_global_info, self._static_rigid_sim_config, self._is_backward
+                )
+                detail_timer.stamp("func_factor_mass_complete")
+
+                # 3.3: Torque and passive force computation
+                print(f"[DEBUG]    3.3. func_torque_and_passive_force")
+                detail_timer.stamp("func_torque_and_passive_force_start")
+                kernel_torque_and_passive_force_only(
+                    self.entities_state, self.entities_info, self.dofs_state, self.dofs_info,
+                    self.links_state, self.links_info, self.joints_info, self.geoms_state,
+                    self._rigid_global_info, self._static_rigid_sim_config,
+                    self.constraint_solver.contact_island.contact_island_state, self._is_backward
+                )
+                detail_timer.stamp("func_torque_and_passive_force_complete")
+
+                # 3.4: Acceleration update (cacc=False for forward dynamics)
+                print(f"[DEBUG]    3.4. func_update_acc (cacc=False)")
+                detail_timer.stamp("func_update_acc_fd_start")
+                kernel_update_acc_only_fd(
+                    self.dofs_state, self.links_info, self.links_state, self.entities_info,
+                    self._rigid_global_info, self._static_rigid_sim_config, self._is_backward
+                )
+                detail_timer.stamp("func_update_acc_fd_complete")
+
+                # 3.5: Force update
+                print(f"[DEBUG]    3.5. func_update_force")
+                detail_timer.stamp("func_update_force_start")
+                kernel_update_force_only(
+                    self.links_state, self.links_info, self.entities_info,
+                    self._rigid_global_info, self._static_rigid_sim_config, self._is_backward
+                )
+                detail_timer.stamp("func_update_force_complete")
+
+                # 3.6: Bias force computation
+                print(f"[DEBUG]    3.6. func_bias_force")
+                detail_timer.stamp("func_bias_force_start")
+                kernel_bias_force_only(
+                    self.dofs_state, self.links_state, self.links_info,
+                    self._rigid_global_info, self._static_rigid_sim_config, self._is_backward
+                )
+                detail_timer.stamp("func_bias_force_complete")
+
+                # 3.7: Acceleration computation (final step)
+                print(f"[DEBUG]    3.7. func_compute_qacc")
+                detail_timer.stamp("func_compute_qacc_start")
+                kernel_compute_qacc_only(
+                    self.dofs_state, self.entities_info, self._rigid_global_info,
+                    self._static_rigid_sim_config, self._is_backward
+                )
+                detail_timer.stamp("func_compute_qacc_complete")
+
+                # Legacy marker for compatibility
+                detail_timer.stamp("func_forward_dynamics_start")
+                detail_timer.stamp("func_forward_dynamics_complete")
+            else:
+                detail_timer.stamp("func_forward_dynamics_start")
+                kernel_forward_dynamics_only(
+                    self.links_state, self.links_info, self.dofs_state, self.dofs_info,
+                    self.joints_info, self.entities_state, self.entities_info, self.geoms_state,
+                    self._rigid_global_info, self._static_rigid_sim_config,
+                    self.constraint_solver.contact_island.contact_island_state, self._is_backward
+                )
+                detail_timer.stamp("func_forward_dynamics_complete")
+
+            print(f"[DEBUG] === COMPLETED KERNEL_STEP_1 DETAILED BREAKDOWN (step {global_step}) ===")
+
+            # Print timing summary for this step
+            if hasattr(detail_timer, 'accu_log') and detail_timer.accu_log:
+                print(f"[DEBUG] KERNEL_STEP_1 TIMING SUMMARY for step {global_step}:")
+                total_time = 0
+                for operation, data in detail_timer.accu_log.items():
+                    if operation.endswith('_complete'):
+                        # Find the corresponding start operation
+                        start_op = operation.replace('_complete', '_start')
+                        if start_op in detail_timer.accu_log:
+                            start_data = detail_timer.accu_log[start_op]
+                            complete_data = data
+                            # Calculate time for this operation
+                            op_time = complete_data[2] - start_data[2]  # accu_time difference
+                            total_time += op_time
+                            op_name = operation.replace('_complete', '').replace('func_', '')
+                            print(f"[DEBUG]   {op_name:25}: {op_time:8.3f}ms")
+                print(f"[DEBUG]   {'TOTAL':25}: {total_time:8.3f}ms")
+                print(f"[DEBUG] ================================================")
+
+            step_timer.stamp("kernel_step_1_detailed_complete")
+
+        elif debug_enabled and hasattr(self, '_use_kernel_step_1_instrumented') and self._use_kernel_step_1_instrumented:
+            print(f"[DEBUG] Using INSTRUMENTED kernel_step_1 (step {global_step})")
+            step_timer.stamp("kernel_step_1_instrumented_start")
+            kernel_step_1_with_detailed_timing(
+                self.links_state,
+                self.links_info,
+                self.joints_state,
+                self.joints_info,
+                self.dofs_state,
+                self.dofs_info,
+                self.geoms_state,
+                self.geoms_info,
+                self.entities_state,
+                self.entities_info,
+                self._rigid_global_info,
+                self._static_rigid_sim_config,
+                self.constraint_solver.contact_island.contact_island_state,
+                self._is_forward_pos_updated,
+                self._is_forward_vel_updated,
+                self._is_backward,
+                global_step,  # Pass step counter for debug
+            )
+            step_timer.stamp("kernel_step_1_instrumented_complete")
+        else:
+            if debug_enabled:
+                print(f"[DEBUG] Using STANDARD kernel_step_1 (step {global_step})")
+            kernel_step_1(
+                self.links_state,
+                self.links_info,
+                self.joints_state,
+                self.joints_info,
+                self.dofs_state,
+                self.dofs_info,
+                self.geoms_state,
+                self.geoms_info,
+                self.entities_state,
+                self.entities_info,
+                self._rigid_global_info,
+                self._static_rigid_sim_config,
+                self.constraint_solver.contact_island.contact_island_state,
+                self._is_forward_pos_updated,
+                self._is_forward_vel_updated,
+                self._is_backward,
+            )
+
+        if debug_enabled:
+            step_timer.stamp("kernel_step_1_complete")
 
         if isinstance(self.sim.coupler, SAPCoupler):
+            if debug_enabled:
+                step_timer.stamp("update_qvel_start")
+                print(f"[DEBUG] Using SAP coupler - executing update_qvel")
             update_qvel(
                 self.dofs_state,
                 self._rigid_global_info,
                 self._static_rigid_sim_config,
                 self._is_backward,
             )
+            if debug_enabled:
+                step_timer.stamp("update_qvel_complete")
         else:
+            if debug_enabled:
+                step_timer.stamp("constraint_force_start")
+                print(f"[DEBUG] Executing constraint force computation")
             self._func_constraint_force()
-            kernel_step_2(
-                self.dofs_state,
-                self.dofs_info,
-                self.links_info,
-                self.links_state,
-                self.joints_info,
-                self.joints_state,
-                self.entities_state,
-                self.entities_info,
-                self.geoms_info,
-                self.geoms_state,
-                self.collider._collider_state,
-                self._rigid_global_info,
-                self._static_rigid_sim_config,
-                self.constraint_solver.contact_island.contact_island_state,
-                self._is_backward,
-                self._errno,
-            )
+
+            if debug_enabled:
+                step_timer.stamp("kernel_step_2_start")
+                print(f"[DEBUG] Executing kernel_step_2")
+
+            # Use different versions based on debug settings
+            if debug_enabled and hasattr(self, '_use_detailed_timing') and self._use_detailed_timing:
+                print(f"[DEBUG] Using DETAILED TIMING kernel_step_2 breakdown (step {global_step})")
+                step_timer.stamp("kernel_step_2_detailed_start")
+
+                # Create detailed sub-timer for individual operations
+                detail_timer = create_timer("kernel_step_2_details", level=2, qd_sync=True)
+
+                # Break down kernel_step_2 into individual timed operations
+                # Following EXACT flow of original kernel_step_2 (lines 2863-2947)
+                print(f"[DEBUG] === kernel_step_2 DETAILED BREAKDOWN (step {global_step}) ===")
+
+                # === ORIGINAL FLOW STEP 1: func_update_acc (always executed) ===
+                print(f"[DEBUG] 1. EXECUTING func_update_acc (always executed)")
+                detail_timer.stamp("func_update_acc_start")
+                kernel_update_acc_only(
+                    self.dofs_state, self.links_info, self.links_state, self.entities_info,
+                    self._rigid_global_info, self._static_rigid_sim_config, self._is_backward
+                )
+                detail_timer.stamp("func_update_acc_complete")
+
+                # === ORIGINAL FLOW STEP 2: if qd.static(static_rigid_sim_config.integrator != gs.integrator.approximate_implicitfast) ===
+                integrator_type = self._static_rigid_sim_config.integrator
+                approx_implicitfast = gs.integrator.approximate_implicitfast
+                print(f"[DEBUG] 2. CONDITIONAL: integrator != approximate_implicitfast")
+                print(f"[DEBUG]    Current integrator: {integrator_type}")
+                print(f"[DEBUG]    approximate_implicitfast: {approx_implicitfast}")
+                print(f"[DEBUG]    Comparison result: {integrator_type != approx_implicitfast}")
+
+                if integrator_type != approx_implicitfast:
+                    print(f"[DEBUG]    ✅ EXECUTING func_implicit_damping")
+                    detail_timer.stamp("func_implicit_damping_start")
+                    kernel_implicit_damping_only(
+                        self.dofs_state, self.dofs_info, self.entities_info,
+                        self._rigid_global_info, self._static_rigid_sim_config, self._is_backward
+                    )
+                    detail_timer.stamp("func_implicit_damping_complete")
+                else:
+                    print(f"[DEBUG]    ❌ SKIPPING func_implicit_damping")
+
+                # === ORIGINAL FLOW STEP 3: func_integrate (always executed) ===
+                print(f"[DEBUG] 3. EXECUTING func_integrate (always executed)")
+                detail_timer.stamp("func_integrate_start")
+                kernel_integrate_only(
+                    self.dofs_state, self.links_info, self.joints_info,
+                    self._rigid_global_info, self._static_rigid_sim_config, self._is_backward
+                )
+                detail_timer.stamp("func_integrate_complete")
+
+                # === ORIGINAL FLOW STEP 4: if qd.static(static_rigid_sim_config.use_hibernation) ===
+                use_hibernation = self._static_rigid_sim_config.use_hibernation
+                print(f"[DEBUG] 4. CONDITIONAL: use_hibernation")
+                print(f"[DEBUG]    use_hibernation: {use_hibernation}")
+
+                if use_hibernation:
+                    print(f"[DEBUG]    ✅ EXECUTING hibernation functions (func_hibernate + func_aggregate_awake_entities)")
+                    detail_timer.stamp("func_hibernation_start")
+                    kernel_hibernation_only(
+                        self.dofs_state, self.entities_state, self.entities_info, self.links_state,
+                        self.geoms_state, self.collider._collider_state, self._rigid_global_info,
+                        self._static_rigid_sim_config, self.constraint_solver.contact_island.contact_island_state,
+                        self._errno
+                    )
+                    detail_timer.stamp("func_hibernation_complete")
+                else:
+                    print(f"[DEBUG]    ❌ SKIPPING hibernation functions")
+
+                # === ORIGINAL FLOW STEP 5: if qd.static(not is_backward) ===
+                is_backward = self._is_backward
+                print(f"[DEBUG] 5. CONDITIONAL: not is_backward")
+                print(f"[DEBUG]    is_backward: {is_backward}")
+                print(f"[DEBUG]    not is_backward: {not is_backward}")
+
+                if not is_backward:
+                    print(f"[DEBUG]    ✅ EXECUTING forward operations")
+
+                    # === ORIGINAL FLOW STEP 5a: func_copy_next_to_curr (always in forward) ===
+                    print(f"[DEBUG]    5a. EXECUTING func_copy_next_to_curr")
+                    detail_timer.stamp("func_copy_next_to_curr_start")
+                    kernel_copy_next_to_curr_only(
+                        self.dofs_state, self._rigid_global_info, self._static_rigid_sim_config, self._errno
+                    )
+                    detail_timer.stamp("func_copy_next_to_curr_complete")
+
+                    # === ORIGINAL FLOW STEP 5b: if qd.static(not static_rigid_sim_config.enable_mujoco_compatibility) ===
+                    mujoco_compat = self._static_rigid_sim_config.enable_mujoco_compatibility
+                    print(f"[DEBUG]    5b. CONDITIONAL: not enable_mujoco_compatibility")
+                    print(f"[DEBUG]        enable_mujoco_compatibility: {mujoco_compat}")
+                    print(f"[DEBUG]        not enable_mujoco_compatibility: {not mujoco_compat}")
+
+                    if not mujoco_compat:
+                        print(f"[DEBUG]        ✅ EXECUTING func_update_cartesian_space + func_forward_velocity")
+                        print(f"[DEBUG]        Using INDIVIDUAL FUNCTION TIMING breakdown")
+
+                        # Individual timing for forward kinematics
+                        detail_timer.stamp("func_forward_kinematics_start")
+                        kernel_forward_kinematics_only(
+                            self.links_state, self.links_info, self.joints_state, self.joints_info,
+                            self.dofs_state, self.dofs_info, self.entities_info, self._rigid_global_info,
+                            self._static_rigid_sim_config, self._is_backward
+                        )
+                        detail_timer.stamp("func_forward_kinematics_complete")
+
+                        # Individual timing for center of mass computation
+                        detail_timer.stamp("func_COM_links_start")
+                        kernel_COM_links_only(
+                            self.links_state, self.links_info, self.joints_state, self.joints_info,
+                            self.dofs_state, self.dofs_info, self.entities_info, self._rigid_global_info,
+                            self._static_rigid_sim_config, self._is_backward
+                        )
+                        detail_timer.stamp("func_COM_links_complete")
+
+                        # Individual timing for geometry updates
+                        detail_timer.stamp("func_update_geoms_start")
+                        kernel_update_geoms_only(
+                            self.links_state, self.geoms_info, self.geoms_state, self.entities_info,
+                            self._rigid_global_info, self._static_rigid_sim_config, self._is_backward
+                        )
+                        detail_timer.stamp("func_update_geoms_complete")
+
+                        # Legacy timing markers for compatibility
+                        detail_timer.stamp("func_update_cartesian_space_start")
+                        detail_timer.stamp("func_update_cartesian_space_complete")
+
+                        detail_timer.stamp("func_forward_velocity_start")
+                        kernel_forward_velocity_only(
+                            self.entities_info, self.links_info, self.links_state, self.joints_info,
+                            self.dofs_state, self._rigid_global_info, self._static_rigid_sim_config, self._is_backward
+                        )
+                        detail_timer.stamp("func_forward_velocity_complete")
+                    else:
+                        print(f"[DEBUG]        ❌ SKIPPING func_update_cartesian_space + func_forward_velocity")
+                else:
+                    print(f"[DEBUG]    ❌ SKIPPING all forward operations")
+
+                print(f"[DEBUG] === COMPLETED kernel_step_2 DETAILED BREAKDOWN (step {global_step}) ===")
+
+                # Print timing summary for this step
+                if hasattr(detail_timer, 'accu_log') and detail_timer.accu_log:
+                    print(f"[DEBUG] TIMING SUMMARY for step {global_step}:")
+                    total_time = 0
+                    for operation, data in detail_timer.accu_log.items():
+                        if operation.endswith('_complete'):
+                            # Find the corresponding start operation
+                            start_op = operation.replace('_complete', '_start')
+                            if start_op in detail_timer.accu_log:
+                                start_data = detail_timer.accu_log[start_op]
+                                complete_data = data
+                                # Calculate time for this operation
+                                op_time = complete_data[2] - start_data[2]  # accu_time difference
+                                total_time += op_time
+                                op_name = operation.replace('_complete', '').replace('func_', '')
+                                print(f"[DEBUG]   {op_name:25}: {op_time:8.3f}ms")
+                    print(f"[DEBUG]   {'TOTAL':25}: {total_time:8.3f}ms")
+                    print(f"[DEBUG] ==================================================")
+                step_timer.stamp("kernel_step_2_detailed_complete")
+
+            elif debug_enabled and hasattr(self, '_use_instrumented_kernels') and self._use_instrumented_kernels:
+                print(f"[DEBUG] Using INSTRUMENTED kernel_step_2 (step {global_step})")
+                step_timer.stamp("kernel_step_2_instrumented_start")
+                kernel_step_2_instrumented(
+                    self.dofs_state,
+                    self.dofs_info,
+                    self.links_info,
+                    self.links_state,
+                    self.joints_info,
+                    self.joints_state,
+                    self.entities_state,
+                    self.entities_info,
+                    self.geoms_info,
+                    self.geoms_state,
+                    self.collider._collider_state,
+                    self._rigid_global_info,
+                    self._static_rigid_sim_config,
+                    self.constraint_solver.contact_island.contact_island_state,
+                    self._is_backward,
+                    self._errno,
+                    global_step,  # Pass step counter for debug
+                )
+                step_timer.stamp("kernel_step_2_instrumented_complete")
+            else:
+                print(f"[DEBUG] Using STANDARD kernel_step_2 (step {global_step})")
+                kernel_step_2(
+                    self.dofs_state,
+                    self.dofs_info,
+                    self.links_info,
+                    self.links_state,
+                    self.joints_info,
+                    self.joints_state,
+                    self.entities_state,
+                    self.entities_info,
+                    self.geoms_info,
+                    self.geoms_state,
+                    self.collider._collider_state,
+                    self._rigid_global_info,
+                    self._static_rigid_sim_config,
+                    self.constraint_solver.contact_island.contact_island_state,
+                    self._is_backward,
+                    self._errno,
+                )
+
+            if debug_enabled:
+                step_timer.stamp("kernel_step_2_complete")
+                print(f"[DEBUG] kernel_step_2 completed")
+
             self._is_forward_pos_updated = not self._enable_mujoco_compatibility
             self._is_forward_vel_updated = not self._enable_mujoco_compatibility
             if self._requires_grad:
@@ -987,6 +1395,73 @@ class RigidSolver(KinematicSolver):
             gs.raise_exception("Invalid accelerations causing 'nan'. Please decrease Rigid simulation timestep.")
         if errno & array_class.ErrorCode.OVERFLOW_HIBERNATION_ISLANDS:
             gs.raise_exception("Contact island buffer overflow. Please increase RigidOptions 'max_collision_pairs'.")
+
+    def enable_debug_timing(self, enable_instrumented_kernels=False, enable_detailed_timing=False,
+                           enable_kernel_step_1_instrumented=False, enable_forward_dynamics_breakdown=False):
+        """
+        Enable detailed debug timing and logging for kernel_step_1 and kernel_step_2.
+
+        Parameters
+        ----------
+        enable_instrumented_kernels : bool, optional
+            If True, use the instrumented version of kernel_step_2 with detailed GPU-side debugging.
+            If False, only enable CPU-side timing around the kernel calls.
+        enable_detailed_timing : bool, optional
+            If True, use detailed timing versions with individual CPU-side timing for each
+            sub-function within kernel_step_1 and kernel_step_2. This provides the most
+            detailed breakdown of performance bottlenecks.
+        enable_kernel_step_1_instrumented : bool, optional
+            If True, use the instrumented version of kernel_step_1 with detailed GPU-side debugging.
+            Can be used independently of other timing options.
+        enable_forward_dynamics_breakdown : bool, optional
+            If True, break down func_forward_dynamics into its 7 individual sub-functions
+            with detailed timing for each component. Most granular level of analysis.
+        """
+        self._debug_kernel_timing = True
+        self._use_instrumented_kernels = enable_instrumented_kernels
+        self._use_detailed_timing = enable_detailed_timing
+        self._use_kernel_step_1_instrumented = enable_kernel_step_1_instrumented
+        self._use_forward_dynamics_breakdown = enable_forward_dynamics_breakdown
+        print(f"[DEBUG] Enabled debug timing for rigid solver")
+        if enable_forward_dynamics_breakdown:
+            print(f"[DEBUG] Using FORWARD DYNAMICS BREAKDOWN with individual sub-function timing")
+        elif enable_detailed_timing:
+            print(f"[DEBUG] Using DETAILED CPU-side timing for each sub-function")
+        elif enable_instrumented_kernels:
+            print(f"[DEBUG] Using instrumented kernels with GPU-side debugging")
+        elif enable_kernel_step_1_instrumented:
+            print(f"[DEBUG] Using instrumented kernel_step_1 with GPU-side debugging")
+        else:
+            print(f"[DEBUG] Using CPU-side timing only")
+
+    def disable_debug_timing(self):
+        """
+        Disable debug timing and logging for kernel_step_1 and kernel_step_2.
+        """
+        self._debug_kernel_timing = False
+        self._use_instrumented_kernels = False
+        self._use_detailed_timing = False
+        self._use_kernel_step_1_instrumented = False
+        self._use_forward_dynamics_breakdown = False
+        print(f"[DEBUG] Disabled debug timing for rigid solver")
+
+    def print_debug_stats(self):
+        """
+        Print debug timing statistics if available.
+        """
+        if hasattr(self, '_debug_kernel_timing') and self._debug_kernel_timing:
+            from genesis.utils.tools import timers
+            if "rigid_substep_detailed" in timers:
+                timer = timers["rigid_substep_detailed"]
+                print("\n[DEBUG] Kernel Timing Statistics:")
+                print("=" * 60)
+                for name, stats in timer.accu_log.items():
+                    count, total_time, _ = stats
+                    avg_time = total_time / count
+                    print(f"{name:<35} | Count: {count:>5} | Avg: {avg_time:>8.3f}ms | Total: {total_time:>8.3f}ms")
+                print("=" * 60)
+        else:
+            print("[DEBUG] Debug timing is not enabled. Call enable_debug_timing() first.")
 
     def _kernel_detect_collision(self):
         self.collider.clear()
@@ -2620,6 +3095,124 @@ def kernel_step_1(
 
 
 @qd.kernel(fastcache=gs.use_fastcache)
+def kernel_step_1_with_detailed_timing(
+    links_state: array_class.LinksState,
+    links_info: array_class.LinksInfo,
+    joints_state: array_class.JointsState,
+    joints_info: array_class.JointsInfo,
+    dofs_state: array_class.DofsState,
+    dofs_info: array_class.DofsInfo,
+    geoms_state: array_class.GeomsState,
+    geoms_info: array_class.GeomsInfo,
+    entities_state: array_class.EntitiesState,
+    entities_info: array_class.EntitiesInfo,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: qd.template(),
+    contact_island_state: array_class.ContactIslandState,
+    is_forward_pos_updated: qd.template(),
+    is_forward_vel_updated: qd.template(),
+    is_backward: qd.template(),
+    debug_step: qd.template(),
+):
+    """
+    Modified kernel_step_1 with comprehensive timing synchronization points and debug logging.
+    This provides detailed breakdown of individual sub-functions with conditional execution tracking.
+    """
+
+    if qd.static(debug_step < 3):
+        print(f"[DETAILED DEBUG] Step {debug_step}: Starting kernel_step_1 sub-function breakdown")
+        print(f"[DETAILED DEBUG] === KERNEL_STEP_1 DETAILED BREAKDOWN (step {debug_step}) ===")
+
+    # 1. Update cartesian space (conditional on forward position update)
+    if qd.static(debug_step < 3):
+        print(f"[DETAILED DEBUG] 1. CONDITIONAL: not is_forward_pos_updated")
+        print(f"[DETAILED DEBUG]    is_forward_pos_updated: {is_forward_pos_updated}")
+        print(f"[DETAILED DEBUG]    not is_forward_pos_updated: {not is_forward_pos_updated}")
+
+    if qd.static(not is_forward_pos_updated):
+        if qd.static(debug_step < 3):
+            print(f"[DETAILED DEBUG]    ✅ EXECUTING func_update_cartesian_space")
+
+        qd.sync()  # Sync for timing
+        func_update_cartesian_space(
+            links_state=links_state,
+            links_info=links_info,
+            joints_state=joints_state,
+            joints_info=joints_info,
+            dofs_state=dofs_state,
+            dofs_info=dofs_info,
+            geoms_info=geoms_info,
+            geoms_state=geoms_state,
+            entities_info=entities_info,
+            rigid_global_info=rigid_global_info,
+            static_rigid_sim_config=static_rigid_sim_config,
+            force_update_fixed_geoms=False,
+            is_backward=is_backward,
+        )
+        qd.sync()  # Sync after for timing
+
+        if qd.static(debug_step < 3):
+            print(f"[DETAILED DEBUG] Step {debug_step}: Completed func_update_cartesian_space")
+    else:
+        if qd.static(debug_step < 3):
+            print(f"[DETAILED DEBUG]    ❌ SKIPPING func_update_cartesian_space")
+
+    # 2. Forward velocity computation (conditional on forward velocity update)
+    if qd.static(debug_step < 3):
+        print(f"[DETAILED DEBUG] 2. CONDITIONAL: not is_forward_vel_updated")
+        print(f"[DETAILED DEBUG]    is_forward_vel_updated: {is_forward_vel_updated}")
+        print(f"[DETAILED DEBUG]    not is_forward_vel_updated: {not is_forward_vel_updated}")
+
+    if qd.static(not is_forward_vel_updated):
+        if qd.static(debug_step < 3):
+            print(f"[DETAILED DEBUG]    ✅ EXECUTING func_forward_velocity")
+
+        qd.sync()  # Sync for timing
+        func_forward_velocity(
+            entities_info=entities_info,
+            links_info=links_info,
+            links_state=links_state,
+            joints_info=joints_info,
+            dofs_state=dofs_state,
+            rigid_global_info=rigid_global_info,
+            static_rigid_sim_config=static_rigid_sim_config,
+            is_backward=is_backward,
+        )
+        qd.sync()  # Sync after for timing
+
+        if qd.static(debug_step < 3):
+            print(f"[DETAILED DEBUG] Step {debug_step}: Completed func_forward_velocity")
+    else:
+        if qd.static(debug_step < 3):
+            print(f"[DETAILED DEBUG]    ❌ SKIPPING func_forward_velocity")
+
+    # 3. Forward dynamics (always executed)
+    if qd.static(debug_step < 3):
+        print(f"[DETAILED DEBUG] 3. EXECUTING func_forward_dynamics (always executed)")
+
+    qd.sync()  # Sync for timing
+    func_forward_dynamics(
+        links_state=links_state,
+        links_info=links_info,
+        dofs_state=dofs_state,
+        dofs_info=dofs_info,
+        joints_info=joints_info,
+        entities_state=entities_state,
+        entities_info=entities_info,
+        geoms_state=geoms_state,
+        rigid_global_info=rigid_global_info,
+        static_rigid_sim_config=static_rigid_sim_config,
+        contact_island_state=contact_island_state,
+        is_backward=is_backward,
+    )
+    qd.sync()  # Sync after for timing
+
+    if qd.static(debug_step < 3):
+        print(f"[DETAILED DEBUG] Step {debug_step}: Completed func_forward_dynamics")
+        print(f"[DETAILED DEBUG] === COMPLETED KERNEL_STEP_1 DETAILED BREAKDOWN (step {debug_step}) ===")
+
+
+@qd.kernel(fastcache=gs.use_fastcache)
 def kernel_step_2(
     dofs_state: array_class.DofsState,
     dofs_info: array_class.DofsInfo,
@@ -2728,4 +3321,889 @@ def kernel_step_2(
                 static_rigid_sim_config=static_rigid_sim_config,
                 is_backward=is_backward,
             )
+
+
+@qd.kernel(fastcache=gs.use_fastcache)
+def kernel_step_2_with_detailed_timing(
+    dofs_state: array_class.DofsState,
+    dofs_info: array_class.DofsInfo,
+    links_info: array_class.LinksInfo,
+    links_state: array_class.LinksState,
+    joints_info: array_class.JointsInfo,
+    joints_state: array_class.JointsState,
+    entities_state: array_class.EntitiesState,
+    entities_info: array_class.EntitiesInfo,
+    geoms_info: array_class.GeomsInfo,
+    geoms_state: array_class.GeomsState,
+    collider_state: array_class.ColliderState,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: qd.template(),
+    contact_island_state: array_class.ContactIslandState,
+    is_backward: qd.template(),
+    errno: array_class.V_ANNOTATION,
+    debug_step: qd.template(),
+):
+    """
+    Modified kernel_step_2 with internal timing synchronization points.
+    This allows us to measure performance of individual sub-functions.
+    """
+    # Sync before each major operation for accurate CPU-side timing
+
+    if qd.static(debug_step < 3):
+        print(f"[DETAILED DEBUG] Step {debug_step}: Starting kernel_step_2 sub-function breakdown")
+
+    # 1. Update accelerations
+    qd.sync()  # Sync for timing
+    func_update_acc(
+        update_cacc=True,
+        dofs_state=dofs_state,
+        links_info=links_info,
+        links_state=links_state,
+        entities_info=entities_info,
+        rigid_global_info=rigid_global_info,
+        static_rigid_sim_config=static_rigid_sim_config,
+        is_backward=is_backward,
+    )
+    qd.sync()  # Sync after for timing
+
+    if qd.static(debug_step < 3):
+        print(f"[DETAILED DEBUG] Step {debug_step}: Completed func_update_acc")
+
+    # 2. Implicit damping (conditional)
+    if qd.static(static_rigid_sim_config.integrator != gs.integrator.approximate_implicitfast):
+        qd.sync()
+        func_implicit_damping(
+            dofs_state=dofs_state,
+            dofs_info=dofs_info,
+            entities_info=entities_info,
+            rigid_global_info=rigid_global_info,
+            static_rigid_sim_config=static_rigid_sim_config,
+            is_backward=is_backward,
+        )
+        qd.sync()
+
+        if qd.static(debug_step < 3):
+            print(f"[DETAILED DEBUG] Step {debug_step}: Completed func_implicit_damping")
+
+    # 3. Integration (this is often the most expensive operation)
+    qd.sync()
+    func_integrate(
+        dofs_state=dofs_state,
+        links_info=links_info,
+        joints_info=joints_info,
+        rigid_global_info=rigid_global_info,
+        static_rigid_sim_config=static_rigid_sim_config,
+        is_backward=is_backward,
+    )
+    qd.sync()
+
+    if qd.static(debug_step < 3):
+        print(f"[DETAILED DEBUG] Step {debug_step}: Completed func_integrate")
+
+    # 4. Hibernation (conditional)
+    if qd.static(static_rigid_sim_config.use_hibernation):
+        qd.sync()
+        func_hibernate__for_all_awake_islands_either_hiberanate_or_update_aabb_sort_buffer(
+            dofs_state=dofs_state,
+            entities_state=entities_state,
+            entities_info=entities_info,
+            links_state=links_state,
+            geoms_state=geoms_state,
+            collider_state=collider_state,
+            unused__rigid_global_info=rigid_global_info,
+            rigid_global_info=rigid_global_info,
+            static_rigid_sim_config=static_rigid_sim_config,
+            contact_island_state=contact_island_state,
+            errno=errno,
+        )
+        func_aggregate_awake_entities(
+            entities_state=entities_state,
+            entities_info=entities_info,
+            rigid_global_info=rigid_global_info,
+            static_rigid_sim_config=static_rigid_sim_config,
+        )
+        qd.sync()
+
+        if qd.static(debug_step < 3):
+            print(f"[DETAILED DEBUG] Step {debug_step}: Completed hibernation functions")
+
+    # 5. Forward operations
+    if qd.static(not is_backward):
+        qd.sync()
+        func_copy_next_to_curr(
+            dofs_state=dofs_state,
+            rigid_global_info=rigid_global_info,
+            static_rigid_sim_config=static_rigid_sim_config,
+            errno=errno,
+        )
+        qd.sync()
+
+        if qd.static(debug_step < 3):
+            print(f"[DETAILED DEBUG] Step {debug_step}: Completed func_copy_next_to_curr")
+
+        if qd.static(not static_rigid_sim_config.enable_mujoco_compatibility):
+            qd.sync()
+            func_update_cartesian_space(
+                links_state=links_state,
+                links_info=links_info,
+                joints_state=joints_state,
+                joints_info=joints_info,
+                dofs_state=dofs_state,
+                dofs_info=dofs_info,
+                geoms_info=geoms_info,
+                geoms_state=geoms_state,
+                entities_info=entities_info,
+                rigid_global_info=rigid_global_info,
+                static_rigid_sim_config=static_rigid_sim_config,
+                force_update_fixed_geoms=False,
+                is_backward=is_backward,
+            )
+            qd.sync()
+
+            if qd.static(debug_step < 3):
+                print(f"[DETAILED DEBUG] Step {debug_step}: Completed func_update_cartesian_space")
+
+            qd.sync()
+            func_forward_velocity(
+                entities_info=entities_info,
+                links_info=links_info,
+                links_state=links_state,
+                joints_info=joints_info,
+                dofs_state=dofs_state,
+                rigid_global_info=rigid_global_info,
+                static_rigid_sim_config=static_rigid_sim_config,
+                is_backward=is_backward,
+            )
+            qd.sync()
+
+            if qd.static(debug_step < 3):
+                print(f"[DETAILED DEBUG] Step {debug_step}: Completed func_forward_velocity")
+
+    if qd.static(debug_step < 3):
+        print(f"[DETAILED DEBUG] Step {debug_step}: Finished kernel_step_2 breakdown")
+
+
+# Individual kernel wrappers for detailed timing
+@qd.kernel(fastcache=gs.use_fastcache)
+def kernel_update_acc_only(
+    dofs_state: array_class.DofsState,
+    links_info: array_class.LinksInfo,
+    links_state: array_class.LinksState,
+    entities_info: array_class.EntitiesInfo,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: qd.template(),
+    is_backward: qd.template(),
+):
+    """Individual timing wrapper for func_update_acc"""
+    func_update_acc(
+        update_cacc=True,
+        dofs_state=dofs_state,
+        links_info=links_info,
+        links_state=links_state,
+        entities_info=entities_info,
+        rigid_global_info=rigid_global_info,
+        static_rigid_sim_config=static_rigid_sim_config,
+        is_backward=is_backward,
+    )
+
+
+@qd.kernel(fastcache=gs.use_fastcache)
+def kernel_implicit_damping_only(
+    dofs_state: array_class.DofsState,
+    dofs_info: array_class.DofsInfo,
+    entities_info: array_class.EntitiesInfo,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: qd.template(),
+    is_backward: qd.template(),
+):
+    """Individual timing wrapper for func_implicit_damping"""
+    func_implicit_damping(
+        dofs_state=dofs_state,
+        dofs_info=dofs_info,
+        entities_info=entities_info,
+        rigid_global_info=rigid_global_info,
+        static_rigid_sim_config=static_rigid_sim_config,
+        is_backward=is_backward,
+    )
+
+
+@qd.kernel(fastcache=gs.use_fastcache)
+def kernel_integrate_only(
+    dofs_state: array_class.DofsState,
+    links_info: array_class.LinksInfo,
+    joints_info: array_class.JointsInfo,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: qd.template(),
+    is_backward: qd.template(),
+):
+    """Individual timing wrapper for func_integrate"""
+    func_integrate(
+        dofs_state=dofs_state,
+        links_info=links_info,
+        joints_info=joints_info,
+        rigid_global_info=rigid_global_info,
+        static_rigid_sim_config=static_rigid_sim_config,
+        is_backward=is_backward,
+    )
+
+
+@qd.kernel(fastcache=gs.use_fastcache)
+def kernel_copy_next_to_curr_only(
+    dofs_state: array_class.DofsState,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: qd.template(),
+    errno: array_class.V_ANNOTATION,
+):
+    """Individual timing wrapper for func_copy_next_to_curr"""
+    func_copy_next_to_curr(
+        dofs_state=dofs_state,
+        rigid_global_info=rigid_global_info,
+        static_rigid_sim_config=static_rigid_sim_config,
+        errno=errno,
+    )
+
+
+@qd.kernel(fastcache=gs.use_fastcache)
+def kernel_update_cartesian_space_only(
+    links_state: array_class.LinksState,
+    links_info: array_class.LinksInfo,
+    joints_state: array_class.JointsState,
+    joints_info: array_class.JointsInfo,
+    dofs_state: array_class.DofsState,
+    dofs_info: array_class.DofsInfo,
+    geoms_info: array_class.GeomsInfo,
+    geoms_state: array_class.GeomsState,
+    entities_info: array_class.EntitiesInfo,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: qd.template(),
+    is_backward: qd.template(),
+):
+    """Individual timing wrapper for func_update_cartesian_space"""
+    func_update_cartesian_space(
+        links_state=links_state,
+        links_info=links_info,
+        joints_state=joints_state,
+        joints_info=joints_info,
+        dofs_state=dofs_state,
+        dofs_info=dofs_info,
+        geoms_info=geoms_info,
+        geoms_state=geoms_state,
+        entities_info=entities_info,
+        rigid_global_info=rigid_global_info,
+        static_rigid_sim_config=static_rigid_sim_config,
+        force_update_fixed_geoms=False,
+        is_backward=is_backward,
+    )
+
+
+@qd.kernel(fastcache=gs.use_fastcache)
+def kernel_forward_kinematics_only(
+    links_state: array_class.LinksState,
+    links_info: array_class.LinksInfo,
+    joints_state: array_class.JointsState,
+    joints_info: array_class.JointsInfo,
+    dofs_state: array_class.DofsState,
+    dofs_info: array_class.DofsInfo,
+    entities_info: array_class.EntitiesInfo,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: qd.template(),
+    is_backward: qd.template(),
+):
+    """Individual timing wrapper for func_forward_kinematics_entity"""
+    # This kernel only executes forward kinematics for all entities
+    if qd.static(static_rigid_sim_config.use_hibernation):
+        qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+        for i_b in range(links_state.pos.shape[1]):
+            for i_e in range(entities_info.n_links.shape[0]):
+                func_forward_kinematics_entity(
+                    i_e,
+                    i_b,
+                    links_state=links_state,
+                    links_info=links_info,
+                    joints_state=joints_state,
+                    joints_info=joints_info,
+                    dofs_state=dofs_state,
+                    dofs_info=dofs_info,
+                    entities_info=entities_info,
+                    rigid_global_info=rigid_global_info,
+                    static_rigid_sim_config=static_rigid_sim_config,
+                    is_backward=is_backward,
+                )
+    else:
+        qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL))
+        for i_e, i_b in qd.ndrange(entities_info.n_links.shape[0], links_state.pos.shape[1]):
+            func_forward_kinematics_entity(
+                i_e,
+                i_b,
+                links_state=links_state,
+                links_info=links_info,
+                joints_state=joints_state,
+                joints_info=joints_info,
+                dofs_state=dofs_state,
+                dofs_info=dofs_info,
+                entities_info=entities_info,
+                rigid_global_info=rigid_global_info,
+                static_rigid_sim_config=static_rigid_sim_config,
+                is_backward=is_backward,
+            )
+
+
+@qd.kernel(fastcache=gs.use_fastcache)
+def kernel_COM_links_only(
+    links_state: array_class.LinksState,
+    links_info: array_class.LinksInfo,
+    joints_state: array_class.JointsState,
+    joints_info: array_class.JointsInfo,
+    dofs_state: array_class.DofsState,
+    dofs_info: array_class.DofsInfo,
+    entities_info: array_class.EntitiesInfo,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: qd.template(),
+    is_backward: qd.template(),
+):
+    """Individual timing wrapper for func_COM_links_entity"""
+    # This kernel only executes COM computation for all entities
+    if qd.static(static_rigid_sim_config.use_hibernation):
+        qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+        for i_b in range(links_state.pos.shape[1]):
+            for i_e in range(entities_info.n_links.shape[0]):
+                func_COM_links_entity(
+                    i_e,
+                    i_b,
+                    links_state=links_state,
+                    links_info=links_info,
+                    joints_state=joints_state,
+                    joints_info=joints_info,
+                    dofs_state=dofs_state,
+                    dofs_info=dofs_info,
+                    entities_info=entities_info,
+                    rigid_global_info=rigid_global_info,
+                    static_rigid_sim_config=static_rigid_sim_config,
+                    is_backward=is_backward,
+                )
+    else:
+        qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL))
+        for i_e, i_b in qd.ndrange(entities_info.n_links.shape[0], links_state.pos.shape[1]):
+            func_COM_links_entity(
+                i_e,
+                i_b,
+                links_state=links_state,
+                links_info=links_info,
+                joints_state=joints_state,
+                joints_info=joints_info,
+                dofs_state=dofs_state,
+                dofs_info=dofs_info,
+                entities_info=entities_info,
+                rigid_global_info=rigid_global_info,
+                static_rigid_sim_config=static_rigid_sim_config,
+                is_backward=is_backward,
+            )
+
+
+@qd.kernel(fastcache=gs.use_fastcache)
+def kernel_update_geoms_only(
+    links_state: array_class.LinksState,
+    geoms_info: array_class.GeomsInfo,
+    geoms_state: array_class.GeomsState,
+    entities_info: array_class.EntitiesInfo,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: qd.template(),
+    is_backward: qd.template(),
+):
+    """Individual timing wrapper for func_update_geoms_entity"""
+    # This kernel only executes geometry updates for all entities
+    if qd.static(static_rigid_sim_config.use_hibernation):
+        qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+        for i_b in range(links_state.pos.shape[1]):
+            for i_e in range(entities_info.n_links.shape[0]):
+                func_update_geoms_entity(
+                    i_e,
+                    i_b,
+                    entities_info=entities_info,
+                    geoms_info=geoms_info,
+                    geoms_state=geoms_state,
+                    links_state=links_state,
+                    rigid_global_info=rigid_global_info,
+                    static_rigid_sim_config=static_rigid_sim_config,
+                    force_update_fixed_geoms=False,
+                    is_backward=is_backward,
+                )
+    else:
+        qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL))
+        for i_e, i_b in qd.ndrange(entities_info.n_links.shape[0], links_state.pos.shape[1]):
+            func_update_geoms_entity(
+                i_e,
+                i_b,
+                entities_info=entities_info,
+                geoms_info=geoms_info,
+                geoms_state=geoms_state,
+                links_state=links_state,
+                rigid_global_info=rigid_global_info,
+                static_rigid_sim_config=static_rigid_sim_config,
+                force_update_fixed_geoms=False,
+                is_backward=is_backward,
+            )
+
+
+@qd.kernel(fastcache=gs.use_fastcache)
+def kernel_hibernation_only(
+    dofs_state: array_class.DofsState,
+    entities_state: array_class.EntitiesState,
+    entities_info: array_class.EntitiesInfo,
+    links_state: array_class.LinksState,
+    geoms_state: array_class.GeomsState,
+    collider_state: array_class.ColliderState,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: qd.template(),
+    contact_island_state: array_class.ContactIslandState,
+    errno: array_class.V_ANNOTATION,
+):
+    """Individual timing wrapper for hibernation functions"""
+    func_hibernate__for_all_awake_islands_either_hiberanate_or_update_aabb_sort_buffer(
+        dofs_state=dofs_state,
+        entities_state=entities_state,
+        entities_info=entities_info,
+        links_state=links_state,
+        geoms_state=geoms_state,
+        collider_state=collider_state,
+        unused__rigid_global_info=rigid_global_info,
+        rigid_global_info=rigid_global_info,
+        static_rigid_sim_config=static_rigid_sim_config,
+        contact_island_state=contact_island_state,
+        errno=errno,
+    )
+    func_aggregate_awake_entities(
+        entities_state=entities_state,
+        entities_info=entities_info,
+        rigid_global_info=rigid_global_info,
+        static_rigid_sim_config=static_rigid_sim_config,
+    )
+
+
+@qd.kernel(fastcache=gs.use_fastcache)
+def kernel_forward_velocity_only(
+    entities_info: array_class.EntitiesInfo,
+    links_info: array_class.LinksInfo,
+    links_state: array_class.LinksState,
+    joints_info: array_class.JointsInfo,
+    dofs_state: array_class.DofsState,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: qd.template(),
+    is_backward: qd.template(),
+):
+    """Individual timing wrapper for func_forward_velocity"""
+    func_forward_velocity(
+        entities_info=entities_info,
+        links_info=links_info,
+        links_state=links_state,
+        joints_info=joints_info,
+        dofs_state=dofs_state,
+        rigid_global_info=rigid_global_info,
+        static_rigid_sim_config=static_rigid_sim_config,
+        is_backward=is_backward,
+    )
+
+
+# Individual kernel wrappers for kernel_step_1 detailed timing
+@qd.kernel(fastcache=gs.use_fastcache)
+def kernel_update_cartesian_space_only(
+    links_state: array_class.LinksState,
+    links_info: array_class.LinksInfo,
+    joints_state: array_class.JointsState,
+    joints_info: array_class.JointsInfo,
+    dofs_state: array_class.DofsState,
+    dofs_info: array_class.DofsInfo,
+    geoms_info: array_class.GeomsInfo,
+    geoms_state: array_class.GeomsState,
+    entities_info: array_class.EntitiesInfo,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: qd.template(),
+    is_backward: qd.template(),
+):
+    """Individual timing wrapper for func_update_cartesian_space"""
+    func_update_cartesian_space(
+        links_state=links_state,
+        links_info=links_info,
+        joints_state=joints_state,
+        joints_info=joints_info,
+        dofs_state=dofs_state,
+        dofs_info=dofs_info,
+        geoms_info=geoms_info,
+        geoms_state=geoms_state,
+        entities_info=entities_info,
+        rigid_global_info=rigid_global_info,
+        static_rigid_sim_config=static_rigid_sim_config,
+        force_update_fixed_geoms=False,
+        is_backward=is_backward,
+    )
+
+
+@qd.kernel(fastcache=gs.use_fastcache)
+def kernel_forward_dynamics_only(
+    links_state: array_class.LinksState,
+    links_info: array_class.LinksInfo,
+    dofs_state: array_class.DofsState,
+    dofs_info: array_class.DofsInfo,
+    joints_info: array_class.JointsInfo,
+    entities_state: array_class.EntitiesState,
+    entities_info: array_class.EntitiesInfo,
+    geoms_state: array_class.GeomsState,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: qd.template(),
+    contact_island_state: array_class.ContactIslandState,
+    is_backward: qd.template(),
+):
+    """Individual timing wrapper for func_forward_dynamics"""
+    func_forward_dynamics(
+        links_state=links_state,
+        links_info=links_info,
+        dofs_state=dofs_state,
+        dofs_info=dofs_info,
+        joints_info=joints_info,
+        entities_state=entities_state,
+        entities_info=entities_info,
+        geoms_state=geoms_state,
+        rigid_global_info=rigid_global_info,
+        static_rigid_sim_config=static_rigid_sim_config,
+        contact_island_state=contact_island_state,
+        is_backward=is_backward,
+    )
+
+
+# Individual kernel wrappers for func_forward_dynamics detailed timing
+@qd.kernel(fastcache=gs.use_fastcache)
+def kernel_compute_mass_matrix_only(
+    links_state: array_class.LinksState,
+    links_info: array_class.LinksInfo,
+    dofs_state: array_class.DofsState,
+    dofs_info: array_class.DofsInfo,
+    entities_info: array_class.EntitiesInfo,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: qd.template(),
+    is_backward: qd.template(),
+):
+    """Individual timing wrapper for func_compute_mass_matrix"""
+    func_compute_mass_matrix(
+        implicit_damping=qd.static(static_rigid_sim_config.integrator == gs.integrator.approximate_implicitfast),
+        links_state=links_state,
+        links_info=links_info,
+        dofs_state=dofs_state,
+        dofs_info=dofs_info,
+        entities_info=entities_info,
+        rigid_global_info=rigid_global_info,
+        static_rigid_sim_config=static_rigid_sim_config,
+        is_backward=is_backward,
+    )
+
+
+@qd.kernel(fastcache=gs.use_fastcache)
+def kernel_factor_mass_only(
+    entities_info: array_class.EntitiesInfo,
+    dofs_state: array_class.DofsState,
+    dofs_info: array_class.DofsInfo,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: qd.template(),
+    is_backward: qd.template(),
+):
+    """Individual timing wrapper for func_factor_mass"""
+    func_factor_mass(
+        implicit_damping=False,
+        entities_info=entities_info,
+        dofs_state=dofs_state,
+        dofs_info=dofs_info,
+        rigid_global_info=rigid_global_info,
+        static_rigid_sim_config=static_rigid_sim_config,
+        is_backward=is_backward,
+    )
+
+
+@qd.kernel(fastcache=gs.use_fastcache)
+def kernel_torque_and_passive_force_only(
+    entities_state: array_class.EntitiesState,
+    entities_info: array_class.EntitiesInfo,
+    dofs_state: array_class.DofsState,
+    dofs_info: array_class.DofsInfo,
+    links_state: array_class.LinksState,
+    links_info: array_class.LinksInfo,
+    joints_info: array_class.JointsInfo,
+    geoms_state: array_class.GeomsState,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: qd.template(),
+    contact_island_state: array_class.ContactIslandState,
+    is_backward: qd.template(),
+):
+    """Individual timing wrapper for func_torque_and_passive_force"""
+    func_torque_and_passive_force(
+        entities_state=entities_state,
+        entities_info=entities_info,
+        dofs_state=dofs_state,
+        dofs_info=dofs_info,
+        links_state=links_state,
+        links_info=links_info,
+        joints_info=joints_info,
+        geoms_state=geoms_state,
+        rigid_global_info=rigid_global_info,
+        static_rigid_sim_config=static_rigid_sim_config,
+        contact_island_state=contact_island_state,
+        is_backward=is_backward,
+    )
+
+
+@qd.kernel(fastcache=gs.use_fastcache)
+def kernel_update_acc_only_fd(
+    dofs_state: array_class.DofsState,
+    links_info: array_class.LinksInfo,
+    links_state: array_class.LinksState,
+    entities_info: array_class.EntitiesInfo,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: qd.template(),
+    is_backward: qd.template(),
+):
+    """Individual timing wrapper for func_update_acc (forward dynamics version)"""
+    func_update_acc(
+        update_cacc=False,
+        dofs_state=dofs_state,
+        links_info=links_info,
+        links_state=links_state,
+        entities_info=entities_info,
+        rigid_global_info=rigid_global_info,
+        static_rigid_sim_config=static_rigid_sim_config,
+        is_backward=is_backward,
+    )
+
+
+@qd.kernel(fastcache=gs.use_fastcache)
+def kernel_update_force_only(
+    links_state: array_class.LinksState,
+    links_info: array_class.LinksInfo,
+    entities_info: array_class.EntitiesInfo,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: qd.template(),
+    is_backward: qd.template(),
+):
+    """Individual timing wrapper for func_update_force"""
+    func_update_force(
+        links_state=links_state,
+        links_info=links_info,
+        entities_info=entities_info,
+        rigid_global_info=rigid_global_info,
+        static_rigid_sim_config=static_rigid_sim_config,
+        is_backward=is_backward,
+    )
+
+
+@qd.kernel(fastcache=gs.use_fastcache)
+def kernel_bias_force_only(
+    dofs_state: array_class.DofsState,
+    links_state: array_class.LinksState,
+    links_info: array_class.LinksInfo,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: qd.template(),
+    is_backward: qd.template(),
+):
+    """Individual timing wrapper for func_bias_force"""
+    func_bias_force(
+        dofs_state=dofs_state,
+        links_state=links_state,
+        links_info=links_info,
+        rigid_global_info=rigid_global_info,
+        static_rigid_sim_config=static_rigid_sim_config,
+        is_backward=is_backward,
+    )
+
+
+@qd.kernel(fastcache=gs.use_fastcache)
+def kernel_compute_qacc_only(
+    dofs_state: array_class.DofsState,
+    entities_info: array_class.EntitiesInfo,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: qd.template(),
+    is_backward: qd.template(),
+):
+    """Individual timing wrapper for func_compute_qacc"""
+    func_compute_qacc(
+        dofs_state=dofs_state,
+        entities_info=entities_info,
+        rigid_global_info=rigid_global_info,
+        static_rigid_sim_config=static_rigid_sim_config,
+        is_backward=is_backward,
+    )
+
+
+@qd.kernel(fastcache=gs.use_fastcache)
+def kernel_step_2_instrumented(
+    dofs_state: array_class.DofsState,
+    dofs_info: array_class.DofsInfo,
+    links_info: array_class.LinksInfo,
+    links_state: array_class.LinksState,
+    joints_info: array_class.JointsInfo,
+    joints_state: array_class.JointsState,
+    entities_state: array_class.EntitiesState,
+    entities_info: array_class.EntitiesInfo,
+    geoms_info: array_class.GeomsInfo,
+    geoms_state: array_class.GeomsState,
+    collider_state: array_class.ColliderState,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: qd.template(),
+    contact_island_state: array_class.ContactIslandState,
+    is_backward: qd.template(),
+    errno: array_class.V_ANNOTATION,
+    debug_step: qd.template(),
+):
+    """
+    Instrumented version of kernel_step_2 with detailed debugging and timing.
+    This kernel includes debug prints for each major sub-function execution.
+    """
+
+    # Debug logging for first few steps to avoid spam
+    if qd.static(debug_step < 10):
+        print(f"[GPU DEBUG] kernel_step_2_instrumented starting, step: {debug_step}")
+
+    # 1. Update accelerations
+    if qd.static(debug_step < 10):
+        print(f"[GPU DEBUG] Step {debug_step}: Starting func_update_acc")
+
+    func_update_acc(
+        update_cacc=True,
+        dofs_state=dofs_state,
+        links_info=links_info,
+        links_state=links_state,
+        entities_info=entities_info,
+        rigid_global_info=rigid_global_info,
+        static_rigid_sim_config=static_rigid_sim_config,
+        is_backward=is_backward,
+    )
+
+    if qd.static(debug_step < 10):
+        print(f"[GPU DEBUG] Step {debug_step}: Completed func_update_acc")
+
+    # 2. Implicit damping (conditional)
+    if qd.static(static_rigid_sim_config.integrator != gs.integrator.approximate_implicitfast):
+        if qd.static(debug_step < 10):
+            print(f"[GPU DEBUG] Step {debug_step}: Starting func_implicit_damping")
+
+        func_implicit_damping(
+            dofs_state=dofs_state,
+            dofs_info=dofs_info,
+            entities_info=entities_info,
+            rigid_global_info=rigid_global_info,
+            static_rigid_sim_config=static_rigid_sim_config,
+            is_backward=is_backward,
+        )
+
+        if qd.static(debug_step < 10):
+            print(f"[GPU DEBUG] Step {debug_step}: Completed func_implicit_damping")
+    else:
+        if qd.static(debug_step < 10):
+            print(f"[GPU DEBUG] Step {debug_step}: Skipping func_implicit_damping (approximate_implicitfast)")
+
+    # 3. Integration
+    if qd.static(debug_step < 10):
+        print(f"[GPU DEBUG] Step {debug_step}: Starting func_integrate")
+
+    func_integrate(
+        dofs_state=dofs_state,
+        links_info=links_info,
+        joints_info=joints_info,
+        rigid_global_info=rigid_global_info,
+        static_rigid_sim_config=static_rigid_sim_config,
+        is_backward=is_backward,
+    )
+
+    if qd.static(debug_step < 10):
+        print(f"[GPU DEBUG] Step {debug_step}: Completed func_integrate")
+
+    # 4. Hibernation (conditional)
+    if qd.static(static_rigid_sim_config.use_hibernation):
+        if qd.static(debug_step < 10):
+            print(f"[GPU DEBUG] Step {debug_step}: Starting hibernation functions")
+
+        func_hibernate__for_all_awake_islands_either_hiberanate_or_update_aabb_sort_buffer(
+            dofs_state=dofs_state,
+            entities_state=entities_state,
+            entities_info=entities_info,
+            links_state=links_state,
+            geoms_state=geoms_state,
+            collider_state=collider_state,
+            unused__rigid_global_info=rigid_global_info,
+            rigid_global_info=rigid_global_info,
+            static_rigid_sim_config=static_rigid_sim_config,
+            contact_island_state=contact_island_state,
+            errno=errno,
+        )
+        func_aggregate_awake_entities(
+            entities_state=entities_state,
+            entities_info=entities_info,
+            rigid_global_info=rigid_global_info,
+            static_rigid_sim_config=static_rigid_sim_config,
+        )
+
+        if qd.static(debug_step < 10):
+            print(f"[GPU DEBUG] Step {debug_step}: Completed hibernation functions")
+    else:
+        if qd.static(debug_step < 10):
+            print(f"[GPU DEBUG] Step {debug_step}: Skipping hibernation (disabled)")
+
+    # 5. Forward direction operations (conditional)
+    if qd.static(not is_backward):
+        if qd.static(debug_step < 10):
+            print(f"[GPU DEBUG] Step {debug_step}: Starting func_copy_next_to_curr")
+
+        func_copy_next_to_curr(
+            dofs_state=dofs_state,
+            rigid_global_info=rigid_global_info,
+            static_rigid_sim_config=static_rigid_sim_config,
+            errno=errno,
+        )
+
+        if qd.static(debug_step < 10):
+            print(f"[GPU DEBUG] Step {debug_step}: Completed func_copy_next_to_curr")
+
+        # 6. Cartesian space update (conditional)
+        if qd.static(not static_rigid_sim_config.enable_mujoco_compatibility):
+            if qd.static(debug_step < 10):
+                print(f"[GPU DEBUG] Step {debug_step}: Starting func_update_cartesian_space")
+
+            func_update_cartesian_space(
+                links_state=links_state,
+                links_info=links_info,
+                joints_state=joints_state,
+                joints_info=joints_info,
+                dofs_state=dofs_state,
+                dofs_info=dofs_info,
+                geoms_info=geoms_info,
+                geoms_state=geoms_state,
+                entities_info=entities_info,
+                rigid_global_info=rigid_global_info,
+                static_rigid_sim_config=static_rigid_sim_config,
+                force_update_fixed_geoms=False,
+                is_backward=is_backward,
+            )
+
+            if qd.static(debug_step < 10):
+                print(f"[GPU DEBUG] Step {debug_step}: Completed func_update_cartesian_space")
+                print(f"[GPU DEBUG] Step {debug_step}: Starting func_forward_velocity")
+
+            func_forward_velocity(
+                entities_info=entities_info,
+                links_info=links_info,
+                links_state=links_state,
+                joints_info=joints_info,
+                dofs_state=dofs_state,
+                rigid_global_info=rigid_global_info,
+                static_rigid_sim_config=static_rigid_sim_config,
+                is_backward=is_backward,
+            )
+
+            if qd.static(debug_step < 10):
+                print(f"[GPU DEBUG] Step {debug_step}: Completed func_forward_velocity")
+        else:
+            if qd.static(debug_step < 10):
+                print(f"[GPU DEBUG] Step {debug_step}: Skipping cartesian/velocity update (mujoco compatibility)")
+    else:
+        if qd.static(debug_step < 10):
+            print(f"[GPU DEBUG] Step {debug_step}: Skipping forward operations (backward mode)")
+
+    if qd.static(debug_step < 10):
+        print(f"[GPU DEBUG] kernel_step_2_instrumented completed, step: {debug_step}")
             
