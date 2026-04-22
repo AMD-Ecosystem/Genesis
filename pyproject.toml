@@ -10,10 +10,6 @@ readme = "README.md"
 requires-python = ">=3.10,<3.14"
 dependencies = [
     "psutil",
-<<<<<<< HEAD
-=======
-    "quadrants==0.6.2",
->>>>>>> 885f85c ([MISC] Remove CUDA Toolkit requirement on SM90+ GPUs. (#2689))
     "pydantic>=2.11.0",
     "numpy>=1.26.4",
     "frozendict",

@@ -1501,6 +1501,7 @@ def func_hessian_direct_batch(
 def func_hessian_direct_tiled(
     constraint_state: array_class.ConstraintState,
     rigid_global_info: array_class.RigidGlobalInfo,
+    check_full_hessian: qd.template() = False,
 ):
     """Compute the Hessian matrix `H = M + J.T @ D @ J of the optimization problem for all environment at once.
 
@@ -1512,6 +1513,9 @@ def func_hessian_direct_tiled(
     optimization problem fits in a single block, i.e. n_constraints <= 32 and n_dofs <= 64.
 
     Note that only the lower triangular part will be updated for efficiency, because the Hessian matrix is symmetric.
+
+    When check_full_hessian is True (used with H patching), skips envs where use_full_hessian == 0 (those get patched
+    instead of rebuilt).
     """
     _B = constraint_state.grad.shape[1]
     n_dofs = constraint_state.nt_H.shape[1]
@@ -1537,6 +1541,9 @@ def func_hessian_direct_tiled(
             continue
         if constraint_state.n_constraints[i_b] == 0 or not constraint_state.improved[i_b]:
             continue
+        if qd.static(check_full_hessian):
+            if constraint_state.use_full_hessian[i_b] == 0:
+                continue
 
         jac_row = qd.simt.block.SharedArray((MAX_CONSTRAINTS_PER_BLOCK, MAX_DOFS_PER_BLOCK), gs.qd_float)
         jac_col = qd.simt.block.SharedArray((MAX_CONSTRAINTS_PER_BLOCK, MAX_DOFS_PER_BLOCK), gs.qd_float)
@@ -1652,6 +1659,7 @@ def func_cholesky_factor_direct_batch(
 
     n_dofs = constraint_state.nt_H.shape[1]
 
+    # In-place factorization on nt_H (batch path never uses H patching)
     for i_d in range(n_dofs):
         tmp = constraint_state.nt_H[i_b, i_d, i_d]
         for j_d in range(i_d):
@@ -1674,20 +1682,25 @@ def func_cholesky_factor_direct_tiled(
 ):
     """Compute the Cholesky factorization L of the Hessian matrix H = L @ L.T for a given environment `i_b`.
 
-    This implementation is specialized for GPU backend and highly optimized for it using shared memory and cooperative
-    threading. The current implementation only supports n_dofs <= 64 for 64bits precision and n_dofs <= 92 for 32bits
-    precision due to shared memory storage being limited to 48kB. Note that the amount of shared memory available is
-    hardware-specific, but the 48kB default limit without enabling dedicated GPU context flag is hardware-agnostic on
-    modern GPUs.
+    This implementation is specialized for GPU backend and highly optimized for it using a left-looking blocked algorithm
+    with Tile16x16 primitives (potrf, trsm, syr_sub, ger_sub), all operating entirely in registers via subgroup shuffles.
+    No shared memory or block synchronization needed. This function has no inherent DOF limit, but the fused variant
+    (func_cholesky_and_solve_fused_tiled) requires shared memory for L, so the caller gates both behind the same
+    shared-memory-based DOF threshold: n_dofs <= 64 (f64) or 96 (f32) with 48kB default shared memory, higher with
+    opt-in shared memory (e.g. 160/224 on RTX PRO 6000).
 
-    Beware the Hessian matrix is re-purposed to store its Cholesky factorization to sparse memory resources.
+    Beware the Hessian matrix is re-purposed to store its Cholesky factorization to spare memory resources.
 
     Note that only the lower triangular part will be updated for efficiency, because the Hessian matrix is symmetric.
+    When n_dofs is not a multiple of 16, partial tiles are padded with identity (diagonal=1, off-diagonal=0) so the
+    factorization is correct for the original n_dofs x n_dofs submatrix. Tile slice ops handle the per-thread bounds
+    internally, so no `if tid < ...` guards are needed at the call site.
     """
     EPS = rigid_global_info.EPS[None]
 
     _B = constraint_state.grad.shape[1]
     n_dofs = constraint_state.nt_H.shape[1]
+    N_BLOCKS = (n_dofs + 16 - 1) // 16
 
     # Performance is optimal for BLOCK_DIM = 64
     BLOCK_DIM = qd.static(64)
@@ -1704,47 +1717,176 @@ def func_cholesky_factor_direct_tiled(
         if constraint_state.n_constraints[i_b] == 0 or not constraint_state.improved[i_b]:
             continue
 
-        # Padding +1 to avoid memory bank conflicts that would cause access serialization
-        H = qd.simt.block.SharedArray((MAX_DOFS, MAX_DOFS + 1), gs.qd_float)
+        # Loop over column blocks sequentially: each column block depends on all prior columns (inherent to
+        # left-looking Cholesky). Within each column, the diagonal is factored first, then off-diagonal rows
+        # are processed sequentially (they only depend on the diagonal, but each tile uses all threads).
+        for kb in range(N_BLOCKS):
+            k0 = kb * 16
+            k1 = qd.min(k0 + 16, n_dofs)
 
-        # Copy the lower triangular part of the entire Hessian matrix to shared memory for efficiency
-        i_pair = tid
-        while i_pair < n_lower_tri:
-            i_d1, i_d2 = linear_to_lower_tri(i_pair)
-            H[i_d1, i_d2] = constraint_state.nt_H[i_b, i_d1, i_d2]
-            i_pair = i_pair + BLOCK_DIM
+            # Load diagonal tile H[k,k] (rows beyond n_dofs stay as identity from the .eye() init)
+            L_kk = qd.simt.Tile16x16.eye(dtype=gs.qd_float)
+            L_kk[:] = constraint_state.nt_H[i_b, k0:k1, k0:k1]
+
+            # Subtract prior-column contributions: L_kk -= sum_j L[k,j] @ L[k,j]^T
+            for jb in range(kb):
+                j0 = jb * 16
+                for t in range(16):
+                    v = constraint_state.nt_H[i_b, k0:k1, j0 + t]
+                    L_kk -= qd.outer(v, v)
+
+            # Factor diagonal tile in-place
+            L_kk.cholesky_(EPS)
+
+            # Solve off-diagonal tiles: L[i,k] = (H[i,k] - sum_j L[i,j] L[k,j]^T) @ inv(L[k,k]^T)
+            for ib in range(kb + 1, N_BLOCKS):
+                i0 = ib * 16
+                i1 = qd.min(i0 + 16, n_dofs)
+
+                # Load off-diagonal tile H[i,k] (rows beyond n_dofs stay as zero from the .zeros() init)
+                L_ik = qd.simt.Tile16x16.zeros(dtype=gs.qd_float)
+                L_ik[:] = constraint_state.nt_H[i_b, i0:i1, k0:k1]
+
+                # Subtract prior-column contributions: L_ik -= sum_j L[i,j] @ L[k,j]^T
+                for jb in range(kb):
+                    j0 = jb * 16
+                    for t in range(16):
+                        v_own = constraint_state.nt_H[i_b, i0:i1, j0 + t]
+                        v_diag = constraint_state.nt_H[i_b, k0:k1, j0 + t]
+                        L_ik -= qd.outer(v_own, v_diag)
+
+                # Triangular solve: L[i,k] = L_ik @ inv(L[k,k]^T)
+                L_kk.solve_triangular_(L_ik)
+
+                # Write L[i,k] back to global memory
+                constraint_state.nt_H[i_b, i0:i1, k0:k1] = L_ik
+
+            # Write L[k,k] back to global memory
+            constraint_state.nt_H[i_b, k0:k1, k0:k1] = L_kk
+
+
+@qd.func
+def func_cholesky_and_solve_fused_tiled(
+    constraint_state: array_class.ConstraintState,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: qd.template(),
+):
+    """Fused Cholesky factorization and triangular solve, keeping L in shared memory.
+
+    Factorizes H = L L^T using register-resident 16x16 tiles, storing completed L tiles in shared memory. Then solves
+    L L^T x = g (forward + backward substitution) in-place and writes the result to Mgrad, without ever writing L to
+    global memory.
+    """
+    EPS = rigid_global_info.EPS[None]
+    MAX_DOFS = qd.static(static_rigid_sim_config.tiled_n_dofs)
+
+    _B = constraint_state.grad.shape[1]
+    n_dofs = constraint_state.nt_H.shape[1]
+    N_BLOCKS = (n_dofs + 16 - 1) // 16
+
+    qd.loop_config(name="cholesky_and_solve_fused_tiled", block_dim=16)
+    for i in range(_B * 16):
+        tid = i % 16
+        i_b = i // 16
+        if i_b >= _B:
+            continue
+        if constraint_state.n_constraints[i_b] == 0 or not constraint_state.improved[i_b]:
+            continue
+
+        # +1 padding avoids shared memory bank conflicts on column-wise access (backward substitution, factorization)
+        L_sh = qd.simt.block.SharedArray((MAX_DOFS, MAX_DOFS + 1), gs.qd_float)
+        v_sh = qd.simt.block.SharedArray((MAX_DOFS,), gs.qd_float)
+
+        # --- Blocked Cholesky factorization (same algorithm as func_cholesky_factor_direct_tiled) ---
+        # Loop over column blocks sequentially: each column block depends on all prior columns (inherent to
+        # left-looking Cholesky). Within each column, the diagonal is factored first, then off-diagonal rows
+        # are processed sequentially (they only depend on the diagonal, but each tile uses all threads).
+        for kb in range(N_BLOCKS):
+            k0 = kb * 16
+            k1 = qd.min(k0 + 16, n_dofs)
+
+            # Load diagonal tile H[k,k] (rows beyond n_dofs stay as identity from the .eye() init)
+            L_kk = qd.simt.Tile16x16.eye(dtype=gs.qd_float)
+            L_kk[:] = constraint_state.nt_H[i_b, k0:k1, k0:k1]
+
+            # Subtract prior-column contributions from shared memory
+            for jb in range(kb):
+                j0 = jb * 16
+                for t in range(16):
+                    v = L_sh[k0:k1, j0 + t]
+                    L_kk -= qd.outer(v, v)
+
+            # Factor diagonal tile in-place
+            L_kk.cholesky_(EPS)
+
+            # Solve off-diagonal tiles and store in shared memory (not global)
+            for ib in range(kb + 1, N_BLOCKS):
+                i0 = ib * 16
+                i1 = qd.min(i0 + 16, n_dofs)
+
+                # Load off-diagonal tile H[i,k] (rows beyond n_dofs stay as zero from the .zeros() init)
+                L_ik = qd.simt.Tile16x16.zeros(dtype=gs.qd_float)
+                L_ik[:] = constraint_state.nt_H[i_b, i0:i1, k0:k1]
+
+                # Subtract prior-column contributions from shared memory
+                for jb in range(kb):
+                    j0 = jb * 16
+                    for t in range(16):
+                        v_own = L_sh[i0:i1, j0 + t]
+                        v_diag = L_sh[k0:k1, j0 + t]
+                        L_ik -= qd.outer(v_own, v_diag)
+
+                # Triangular solve: L[i,k] = L_ik @ inv(L[k,k]^T)
+                L_kk.solve_triangular_(L_ik)
+
+                # Write L[i,k] to shared memory
+                L_sh[i0:i1, k0:k1] = L_ik
+
+            # Write L[k,k] to shared memory
+            L_sh[k0:k1, k0:k1] = L_kk
+
+        # --- Scalar triangular solve using L from shared memory ---
+        # No longer using 16x16 tiles; the 16 threads parallelize each row's
+        # dot product by striping across columns, then subgroup-reduce to
+        # sum the partial products. Thread 0 writes each solved element.
+
+        # Load gradient into v_sh
+        k = tid
+        while k < n_dofs:
+            v_sh[k] = constraint_state.grad[k, i_b]
+            k = k + 16
         qd.simt.block.sync()
 
-        # Loop over all columns sequentially, which is an integral part of Cholesky-Crout algorithm and cannot be
-        # avoided.
+        # Forward substitution: solve L @ y = grad (parallel dot with 16 threads)
         for i_d in range(n_dofs):
-            # Compute the diagonal of the Cholesky factor L for the column i being considered, ie
-            # L_{i,i} = sqrt(A_{i,i} - sum_{j=1}^{i-1}(L_{i,j} ** 2 ))
+            dot = gs.qd_float(0.0)
+            j = tid
+            while j < i_d:
+                dot = dot + L_sh[i_d, j] * v_sh[j]
+                j = j + 16
+            dot = qd.simt.subgroup.reduce_all_add(dot, 4)
             if tid == 0:
-                tmp = H[i_d, i_d]
-                for j_d in range(i_d):
-                    tmp = tmp - H[i_d, j_d] ** 2
-                H[i_d, i_d] = qd.sqrt(qd.max(tmp, EPS))
+                v_sh[i_d] = (v_sh[i_d] - dot) / L_sh[i_d, i_d]
             qd.simt.block.sync()
 
-            # Compute all the off-diagonal terms of the Cholesky factor L for the column i being considered, ie
-            # L_{j,i} = 1 / L_{i,i} (A_{j,i} - sum_{k=1}^{i-1}(L_{j,k} L_{i,k}), for j > i
-            inv_diag = 1.0 / H[i_d, i_d]
-            j_d = i_d + 1 + tid
-            while j_d < n_dofs:
-                dot = gs.qd_float(0.0)
-                for k_d in range(i_d):
-                    dot = dot + H[j_d, k_d] * H[i_d, k_d]
-                H[j_d, i_d] = (H[j_d, i_d] - dot) * inv_diag
-                j_d = j_d + BLOCK_DIM
+        # Backward substitution: solve L^T @ x = y (parallel dot with 16 threads)
+        for i_d_ in range(n_dofs):
+            i_d = n_dofs - 1 - i_d_
+            dot = gs.qd_float(0.0)
+            j = i_d + 1 + tid
+            while j < n_dofs:
+                dot = dot + L_sh[j, i_d] * v_sh[j]
+                j = j + 16
+            dot = qd.simt.subgroup.reduce_all_add(dot, 4)
+            if tid == 0:
+                v_sh[i_d] = (v_sh[i_d] - dot) / L_sh[i_d, i_d]
             qd.simt.block.sync()
 
-        # Copy the final result back from shared memory, only considered the lower triangular part
-        i_pair = tid
-        while i_pair < n_lower_tri:
-            i_d1, i_d2 = linear_to_lower_tri(i_pair)
-            constraint_state.nt_H[i_b, i_d1, i_d2] = H[i_d1, i_d2]
-            i_pair = i_pair + BLOCK_DIM
+        # Write Mgrad to global memory
+        k = tid
+        while k < n_dofs:
+            constraint_state.Mgrad[k, i_b] = v_sh[k]
+            k = k + 16
 
 
 @qd.func
@@ -1937,6 +2079,7 @@ def func_cholesky_solve_batch(
 ):
     n_dofs = constraint_state.Mgrad.shape[0]
 
+    # Batch path: L is in nt_H (in-place factorization)
     for i_d in range(n_dofs):
         curr_out = constraint_state.grad[i_d, i_b]
         for j_d in range(i_d):
@@ -1995,7 +2138,7 @@ def func_cholesky_solve_tiled(
             (NUM_WARPS if qd.static(ENABLE_WARP_REDUCTION) else BLOCK_DIM,), gs.qd_float
         )
 
-        # Copy the lower triangular part of the entire Hessian matrix to shared memory for efficiency
+        # Copy the lower triangular part of L (Cholesky factor) to shared memory for efficiency
         i_flat = tid
         while i_flat < n_dofs_2:
             i_d1 = i_flat // n_dofs
@@ -3122,6 +3265,8 @@ def func_solve_init(
     qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
     for i_b in qd.ndrange(_B):
         constraint_state.improved[i_b] = constraint_state.n_constraints[i_b] > 0
+        constraint_state.use_full_hessian[i_b] = 1
+    constraint_state.solver_iter_counter[()] = 0
 
     if qd.static(static_rigid_sim_config.solver_type == gs.constraint_solver.Newton):
         func_hessian_and_cholesky_factor_direct(

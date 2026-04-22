@@ -3612,6 +3612,7 @@ def test_cholesky_tiling(monkeypatch, tol):
             rigid_options=gs.options.RigidOptions(
                 constraint_solver=gs.constraint_solver.Newton,
                 sparse_solve=False,
+                iterations=1,
             ),
             show_viewer=False,
             show_FPS=False,
@@ -3630,11 +3631,12 @@ def test_cholesky_tiling(monkeypatch, tol):
         assert not scene.rigid_solver.get_error_envs_mask().any()
         assert (scene.rigid_solver.constraint_solver.constraint_state.n_constraints.to_numpy() > 0).all()
 
-        nt_H = scene.rigid_solver.constraint_solver.constraint_state.nt_H.to_numpy()
-        assert (np.linalg.norm(nt_H.reshape((-1, 2)), axis=0) > 5.0).all()
-        values.append(nt_H)
+        Mgrad = scene.rigid_solver.constraint_solver.constraint_state.Mgrad.to_numpy()
+        assert np.linalg.norm(Mgrad) > 5.0
+        values.append(Mgrad)
 
-    assert_allclose(*values, tol=tol)
+    # analysis for choice tolerance: https://github.com/Genesis-Embodied-AI/Genesis/pull/2659#discussion_r3041684256
+    assert_allclose(*values, tol=5e-4)
 
 
 @pytest.mark.precision("32")
