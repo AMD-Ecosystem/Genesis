@@ -119,13 +119,13 @@ class ProximitySensorMetadataMixin:
 
     total_n_probes: int = 0
     probe_positions: torch.Tensor = make_tensor_field((0, 3))
-    n_probes_per_sensor: torch.Tensor = make_tensor_field((0,), dtype=gs.tc_int)
-    probe_sensor_idx: torch.Tensor = make_tensor_field((0,), dtype=gs.tc_int)
-    sensor_cache_start: torch.Tensor = make_tensor_field((0,), dtype=gs.tc_int)
-    sensor_probe_start: torch.Tensor = make_tensor_field((0,), dtype=gs.tc_int)
-    track_link_start: torch.Tensor = make_tensor_field((0,), dtype=gs.tc_int)
-    track_link_end: torch.Tensor = make_tensor_field((0,), dtype=gs.tc_int)
-    track_link_flat: torch.Tensor = make_tensor_field((0,), dtype=gs.tc_int)
+    n_probes_per_sensor: torch.Tensor = make_tensor_field((0,), dtype_factory=lambda: gs.tc_int)
+    probe_sensor_idx: torch.Tensor = make_tensor_field((0,), dtype_factory=lambda: gs.tc_int)
+    sensor_cache_start: torch.Tensor = make_tensor_field((0,), dtype_factory=lambda: gs.tc_int)
+    sensor_probe_start: torch.Tensor = make_tensor_field((0,), dtype_factory=lambda: gs.tc_int)
+    track_link_start: torch.Tensor = make_tensor_field((0,), dtype_factory=lambda: gs.tc_int)
+    track_link_end: torch.Tensor = make_tensor_field((0,), dtype_factory=lambda: gs.tc_int)
+    track_link_flat: torch.Tensor = make_tensor_field((0,), dtype_factory=lambda: gs.tc_int)
     nearest_positions: torch.Tensor = make_tensor_field((0, 0, 3))
     max_range: torch.Tensor = make_tensor_field((0,))
 
@@ -266,7 +266,7 @@ class ProximitySensor(
         cls._add_noise_drift_bias(shared_metadata, shared_cache)
         cls._quantize_to_resolution(shared_metadata.resolution, shared_cache)
 
-    def _draw_debug(self, context: "RasterizerContext", buffer_updates: dict[str, np.ndarray]):
+    def _draw_debug(self, context: "RasterizerContext"):
         env_idx = context.rendered_envs_idx[0] if self._manager._sim.n_envs > 0 else None
         for obj in self._debug_objects:
             context.clear_debug_object(obj)

@@ -47,7 +47,7 @@ class SharedSensorMetadata:
     """
 
     cache_sizes: list[int] = field(default_factory=list)
-    delays_ts: torch.Tensor = make_tensor_field((0, 0), dtype=gs.tc_int)
+    delays_ts: torch.Tensor = make_tensor_field((0, 0), dtype_factory=lambda: gs.tc_int)
 
     def __del__(self):
         try:
@@ -218,7 +218,7 @@ class Sensor(RBC, Generic[OptionsT, SharedSensorMetadataT, DataT]):
         """
         raise NotImplementedError(f"{cls.__name__} has not implemented `get_cache_dtype()`.")
 
-    def _draw_debug(self, context: "RasterizerContext", buffer_updates: dict[str, np.ndarray]):
+    def _draw_debug(self, context: "RasterizerContext"):
         """
         Draw debug shapes for the sensor in the scene.
         """
@@ -359,7 +359,7 @@ class RigidSensorMetadataMixin:
     """
 
     solver: "RigidSolver | None" = None
-    links_idx: torch.Tensor = make_tensor_field((0,), dtype=gs.tc_int)
+    links_idx: torch.Tensor = make_tensor_field((0,), dtype_factory=lambda: gs.tc_int)
     offsets_pos: torch.Tensor = make_tensor_field((0, 0, 3))
     offsets_quat: torch.Tensor = make_tensor_field((0, 0, 4))
 

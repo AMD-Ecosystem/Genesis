@@ -75,7 +75,7 @@ class ContactSensorMetadata(SharedSensorMetadata):
     """
 
     solver: "RigidSolver | None" = None
-    expanded_links_idx: torch.Tensor = make_tensor_field((0,), dtype=gs.tc_int)
+    expanded_links_idx: torch.Tensor = make_tensor_field((0,), dtype_factory=lambda: gs.tc_int)
 
 
 class ContactSensor(Sensor[ContactSensorOptions, ContactSensorMetadata]):
@@ -117,6 +117,9 @@ class ContactSensor(Sensor[ContactSensorOptions, ContactSensorMetadata]):
         assert shared_metadata.solver is not None
         all_contacts = shared_metadata.solver.collider.get_contacts(as_tensor=True, to_torch=True)
         link_a, link_b = all_contacts["link_a"], all_contacts["link_b"]
+        if link_a.shape[-1] == 0:
+            shared_ground_truth_cache.zero_()
+            return
         if shared_metadata.solver.n_envs == 0:
             link_a, link_b = link_a[None], link_b[None]
         is_contact_a = (link_a[..., None, :] == shared_metadata.expanded_links_idx[..., None]).any(dim=-1)
@@ -134,7 +137,7 @@ class ContactSensor(Sensor[ContactSensorOptions, ContactSensorMetadata]):
         buffered_data.set(shared_ground_truth_cache)
         cls._apply_delay_to_shared_cache(shared_metadata, shared_cache, buffered_data)
 
-    def _draw_debug(self, context: "RasterizerContext", buffer_updates: dict[str, np.ndarray]):
+    def _draw_debug(self, context: "RasterizerContext"):
         """
         Draw debug sphere when the sensor detects contact.
 
@@ -147,7 +150,7 @@ class ContactSensor(Sensor[ContactSensorOptions, ContactSensorMetadata]):
 
         if self.debug_object is not None:
             context.clear_debug_object(self.debug_object)
-            self.debug_objects = None
+            self.debug_object = None
 
         if is_contact:
             self.debug_object = context.draw_debug_sphere(
@@ -270,7 +273,7 @@ class ContactForceSensor(
         shared_cache_per_sensor.masked_fill_(torch.abs(shared_cache_per_sensor) < shared_metadata.min_force, 0.0)
         cls._quantize_to_resolution(shared_metadata.resolution, shared_cache)
 
-    def _draw_debug(self, context: "RasterizerContext", buffer_updates: dict[str, np.ndarray]):
+    def _draw_debug(self, context: "RasterizerContext"):
         """
         Draw debug arrow representing the contact force.
 

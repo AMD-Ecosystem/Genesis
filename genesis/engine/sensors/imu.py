@@ -69,9 +69,9 @@ class IMUSharedMetadata(RigidSensorMetadataMixin, NoisySensorMetadataMixin, Shar
 
     alignment_rot_matrix: torch.Tensor = make_tensor_field((0, 0, 3, 3))
     magnetic_field_vector: torch.Tensor = make_tensor_field((0, 0, 3))  # added another dimension to match data layout
-    acc_indices: torch.Tensor = make_tensor_field((0, 0), dtype=gs.tc_int)
-    gyro_indices: torch.Tensor = make_tensor_field((0, 0), dtype=gs.tc_int)
-    mag_indices: torch.Tensor = make_tensor_field((0, 0), dtype=gs.tc_int)
+    acc_indices: torch.Tensor = make_tensor_field((0, 0), dtype_factory=lambda: gs.tc_int)
+    gyro_indices: torch.Tensor = make_tensor_field((0, 0), dtype_factory=lambda: gs.tc_int)
+    mag_indices: torch.Tensor = make_tensor_field((0, 0), dtype_factory=lambda: gs.tc_int)
 
 
 class IMUData(NamedTuple):
@@ -235,7 +235,7 @@ class IMUSensor(
         cls._add_noise_drift_bias(shared_metadata, shared_cache)
         cls._quantize_to_resolution(shared_metadata.resolution, shared_cache)
 
-    def _draw_debug(self, context: "RasterizerContext", buffer_updates: dict[str, np.ndarray]):
+    def _draw_debug(self, context: "RasterizerContext"):
         """
         Draw debug arrow for the IMU acceleration.
 
