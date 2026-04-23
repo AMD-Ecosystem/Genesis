@@ -373,10 +373,7 @@ def func_compute_mass_matrix_lds(
 
         while pair_idx < n_pairs:
             # Convert linear index to (i, j) lower triangular
-            i_d_ = qd.cast(qd.floor((qd.sqrt(qd.cast(8 * pair_idx + 1, qd.f32)) - 1.0) / 2.0), qd.i32)
-            if (i_d_ + 1) * (i_d_ + 2) // 2 <= pair_idx:
-                i_d_ = i_d_ + 1
-            j_d_ = pair_idx - i_d_ * (i_d_ + 1) // 2
+            i_d_, j_d_ = _linear_to_lower_tri(pair_idx)
 
             # Fast LDS-based computation
             ang_dot = (f_ang_cache[i_d_, 0] * cdof_ang_cache[j_d_, 0] +
