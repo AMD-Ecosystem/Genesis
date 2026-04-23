@@ -1911,7 +1911,6 @@ def func_update_cartesian_space_entity(
     # `include_com=True` here; the split helpers handle `batch_links_info`
     # via the usual `[i_l, i_b]` indexing, so no extra gating is needed.
     if qd.static(include_com):
-    if qd.static(include_com):
         func_COM_links_entity(
             i_e,
             i_b,
