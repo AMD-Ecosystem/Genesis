@@ -877,15 +877,9 @@ def func_com_links_split(
     Pass 2 runs with the same 2-level outer loop as the original entity-level
     cartesian-update launch: one thread per (root-entity, batch), which then
     walks every entity sharing that root in ascending entity-index order and
-    invokes the per-entity Pass-2 body on it. Per-link parallelism on Pass 2
-    was measured to both run slower (dominant sub-kernel at ~875 µs/call vs.
-    ~50 µs combined for the others) and produce a nondeterministic summation
-    order that diverged the simulation trajectory enough to blow up the
-    downstream solver/broadphase/narrowphase kernels. The single-owning-thread
-    tree walk reproduces the baseline's `mass_sum` RMW and `root_COM_bw`
-    `atomic_add` pattern bit-exact.
+    invokes the per-entity Pass-2 body on it
 
-    Each top-level `for` below is emitted by Taichi as its own offloaded
+    Each top-level `for` below is emitted by quadrant as its own offloaded
     sub-kernel with an implicit device-wide barrier between them, so the
     original sequential ordering between passes is preserved.
     """
@@ -899,11 +893,7 @@ def func_com_links_split(
     for i_l, i_b in qd.ndrange(n_links, _B):
         func_com_pass1_zero_link(i_l, i_b, links_state)
 
-    # Pass 2: 2-level outer loop over (root-entity, batch); each owning thread
-    # walks its tree and invokes the per-entity Pass-2 body. This is the same
-    # traversal structure as the pre-tree-parallelization entity-level
-    # cartesian-update launch, which gives bit-exact baseline numerics for the
-    # mass/CoM reduction (see `func_com_pass2_accumulate_entity` docstring).
+    # Pass 2: 2-level outer loop over (root-entity, batch)
     qd.loop_config(serialize=serialize, block_dim=64)
     for i_e, i_b in qd.ndrange(entities_info.n_links.shape[0], _B):
         i_l_start = entities_info.link_start[i_e]
@@ -1915,11 +1905,12 @@ def func_update_cartesian_space_entity(
         static_rigid_sim_config=static_rigid_sim_config,
         is_backward=is_backward,
     )
-    # The common (non-hibernation, non-batch_links_info) cartesian-update launch
-    # moves CoM out of this per-entity device function and runs it afterwards
-    # as 7 per-link-parallel sub-kernels via `func_com_links_split`. Paths that
-    # still need the fused implementation (hibernation, batch_links_info) pass
-    # `include_com=True`.
+    # The non-hibernation cartesian-update launch moves CoM out of this
+    # per-entity device function and runs it afterwards as 7 sub-kernels via
+    # `func_com_links_split`. Only the hibernation path passes
+    # `include_com=True` here; the split helpers handle `batch_links_info`
+    # via the usual `[i_l, i_b]` indexing, so no extra gating is needed.
+    if qd.static(include_com):
     if qd.static(include_com):
         func_COM_links_entity(
             i_e,
