@@ -580,27 +580,11 @@ def func_COM_links_entity(
                                 )
 
 
-# ---------------------------------------------------------------------------
-# Split CoM passes (replacements for the fused func_COM_links_entity).
-#
-# `func_COM_links_entity` folds 7 sequential passes over every link of a single
-# entity into one device function. When it is inlined into the cartesian-update
-# entity walk, the resulting sub-kernel carries the live variable set of all
-# 7 passes at once, which drives the ~128 VGPR / 416 B scratch spill we see
-# on gfx942.
-#
-# The helpers below decompose the same work into 7 separate top-level loops.
-# Passes 1, 3, 4, 5, 6, 7 are parallel across (link, batch). Pass 2 uses the
-# same 2-level outer loop as the original entity-level cartesian-update launch
-# (one thread per (root-entity, batch), which then walks every entity in the
-# same tree) so its mass/CoM reduction stays bit-exact with the fused
-# baseline. Taichi emits one sub-kernel per top-level `for`, so the register
-# pressure of each pass is bounded by what it alone needs and the implicit
-# kernel-boundary barrier between sub-kernels provides the inter-pass
-# synchronization the original sequential passes relied on.
-#
-# The hibernation path still uses the fused `func_COM_links_entity`.
-# ---------------------------------------------------------------------------
+# Split CoM passes: decompose the 7 sequential passes of `func_COM_links_entity`
+# into separate top-level loops to reduce per-sub-kernel register pressure.
+# Passes 1, 3, 4, 5, 6, 7 are parallel across (link, batch); pass 2 uses the
+# (root-entity, batch) outer loop so its mass/CoM reduction stays bit-exact
+# with the fused baseline. The hibernation path still uses the fused version.
 
 
 @qd.func
