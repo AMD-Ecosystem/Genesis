@@ -417,29 +417,26 @@ def func_compute_mass_matrix_lds(
 
             global_pair_idx += BLOCK_DIM
 
-        # Mirror upper triangle for symmetric matrix (forward pass only)
-        if qd.static(not BW):
-            qd.simt.block.sync()  # Ensure stores are complete
+        # Mirror upper triangle for symmetric matrix in both forward and backward passes
+        qd.simt.block.sync()  # Ensure lower-triangle stores are complete
 
-            n_upper_pairs = n_dofs * (n_dofs - 1) // 2
-            upper_idx = tid
+        n_upper_pairs = n_dofs * (n_dofs - 1) // 2
+        upper_idx = tid
 
-            while upper_idx < n_upper_pairs:
-                # Convert to upper triangle indices
-                i_d_ = qd.cast(qd.floor((qd.sqrt(qd.cast(8 * upper_idx + 1, qd.f32)) + 1.0) / 2.0), qd.i32)
-                if i_d_ * (i_d_ + 1) // 2 <= upper_idx:
-                    i_d_ = i_d_ + 1
-                j_d_ = upper_idx - i_d_ * (i_d_ - 1) // 2
+        while upper_idx < n_upper_pairs:
+            # Convert to upper triangle indices
+            i_d_ = qd.cast(qd.floor((qd.sqrt(qd.cast(8 * upper_idx + 1, qd.f32)) + 1.0) / 2.0), qd.i32)
+            if i_d_ * (i_d_ + 1) // 2 <= upper_idx:
+                i_d_ = i_d_ + 1
+            j_d_ = upper_idx - i_d_ * (i_d_ - 1) // 2
 
-                i_d_global = entity_dof_start + j_d_  # Note: swapped for upper triangle
-                j_d_global = entity_dof_start + i_d_
+            i_d_global = entity_dof_start + j_d_  # Note: swapped for upper triangle
+            j_d_global = entity_dof_start + i_d_
 
-                # Mirror from lower triangle
-                rigid_global_info.mass_mat[i_d_global, j_d_global, i_b] = rigid_global_info.mass_mat[j_d_global, i_d_global, i_b]
+            # Mirror from lower triangle
+            rigid_global_info.mass_mat[i_d_global, j_d_global, i_b] = rigid_global_info.mass_mat[j_d_global, i_d_global, i_b]
 
-                upper_idx += BLOCK_DIM
-
-
+            upper_idx += BLOCK_DIM
 @qd.func
 def func_compute_mass_matrix(
     implicit_damping: qd.template(),
