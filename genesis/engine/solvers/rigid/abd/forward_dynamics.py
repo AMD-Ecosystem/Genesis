@@ -310,7 +310,7 @@ def func_compute_mass_matrix_lds(
 
     n_entities = entities_info.n_links.shape[0]
     _B = links_state.pos.shape[1]
-    n_thread_entities = awake_entities.shape[0] if qd.static(static_rigid_sim_config.use_hibernation) else n_entities
+    n_thread_entities = rigid_global_info.awake_entities.shape[0] if qd.static(static_rigid_sim_config.use_hibernation) else n_entities
 
     qd.loop_config(block_dim=BLOCK_DIM)
     for i in range(n_thread_entities * _B * BLOCK_DIM):
@@ -321,12 +321,12 @@ def func_compute_mass_matrix_lds(
         if i_b >= _B:
             continue
 
+        i_e = i_e_local
+
         if qd.static(static_rigid_sim_config.use_hibernation):
-            if not func_check_index_range(i_e_local, awake_entities.shape[0]):
+            if not func_check_index_range(i_e_local, rigid_global_info.awake_entities.shape[0]):
                 continue
-            i_e = awake_entities[i_e_local, i_b]
-        else:
-            i_e = i_e_local
+            i_e = rigid_global_info.awake_entities[i_e_local, i_b]
         entity_dof_start = entities_info.dof_start[i_e]
         entity_dof_end = entities_info.dof_end[i_e]
         n_dofs = entities_info.n_dofs[i_e]
@@ -337,7 +337,7 @@ def func_compute_mass_matrix_lds(
         #   - n^2      comes from mass_mat_local[n, n]
         #   - 12n      comes from 4 vector caches of shape [n, 3]
         # Constraining that to ~64KB gives n <= 122 for 4-byte floats.
-        KERNEL_MAX_DOFS_PER_ENTITY = 122 if MAX_DOFS_PER_ENTITY > 122 else MAX_DOFS_PER_ENTITY
+        KERNEL_MAX_DOFS_PER_ENTITY = qd.static(122 if MAX_DOFS_PER_ENTITY > 122 else MAX_DOFS_PER_ENTITY)
 
         if n_dofs <= 0 or n_dofs > KERNEL_MAX_DOFS_PER_ENTITY:
             continue
