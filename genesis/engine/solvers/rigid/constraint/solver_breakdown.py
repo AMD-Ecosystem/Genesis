@@ -181,19 +181,16 @@ def _kernel_update_gradient(
     rigid_global_info: array_class.RigidGlobalInfo,
     static_rigid_sim_config: ti.template(),
 ):
-    """Step 5: Update gradient"""
-    _B = constraint_state.grad.shape[1]
-    ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, block_dim=32)
-    for i_b in range(_B):
-        if constraint_state.n_constraints[i_b] > 0 and constraint_state.improved[i_b]:
-            solver.func_update_gradient_batch(
-                i_b,
-                dofs_state=dofs_state,
-                entities_info=entities_info,
-                rigid_global_info=rigid_global_info,
-                constraint_state=constraint_state,
-                static_rigid_sim_config=static_rigid_sim_config,
-            )
+    """Step 5: Update gradient — delegates to the dispatcher so AMDGPU gets
+    the tiled Cholesky/mass-solve path (func_update_gradient_tiled) instead
+    of per-env serial func_update_gradient_batch."""
+    solver.func_update_gradient(
+        dofs_state=dofs_state,
+        entities_info=entities_info,
+        rigid_global_info=rigid_global_info,
+        constraint_state=constraint_state,
+        static_rigid_sim_config=static_rigid_sim_config,
+    )
 
 
 @ti.kernel(fastcache=gs.use_fastcache)
@@ -215,7 +212,7 @@ def _kernel_update_search_direction(
             )
 
 
-@solver.func_solve_body.register(is_compatible=lambda *args, **kwargs: gs.backend in {gs.cuda})
+@solver.func_solve_body.register(is_compatible=lambda *args, **kwargs: gs.backend is not gs.cpu)
 def func_solve_decomposed(
     entities_info,
     dofs_state,
