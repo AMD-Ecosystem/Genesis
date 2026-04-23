@@ -303,10 +303,10 @@ def func_compute_mass_matrix_lds(
 ):
     BW = qd.static(is_backward)
 
-    # LDS-optimized GPU implementation - MAXIMUM performance settings
+    # LDS-optimized GPU implementation using a fixed block size and the
+    # configured per-entity tiled DoF bound.
     BLOCK_DIM = qd.static(64)
     MAX_DOFS_PER_ENTITY = qd.static(static_rigid_sim_config.tiled_n_dofs_per_entity)
-    MAX_TILE_SIZE = qd.static(16)  # MAXIMUM tile size for best performance
 
     n_entities = entities_info.n_links.shape[0]
     _B = links_state.pos.shape[1]
