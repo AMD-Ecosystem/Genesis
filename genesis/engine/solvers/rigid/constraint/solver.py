@@ -9,7 +9,7 @@ import genesis as gs
 
 import genesis.utils.array_class as array_class
 import genesis.utils.geom as gu
-from genesis.engine.solvers.rigid.abd import func_solve_mass_batch
+from genesis.engine.solvers.rigid.abd import func_solve_mass_batch, func_solve_mass_tiled
 from genesis.utils.misc import qd_to_torch, indices_to_mask, assign_indexed_tensor
 
 from ..collider.contact_island import ContactIsland
@@ -2771,18 +2771,16 @@ def func_update_gradient_tiled(
         )
 
     if qd.static(static_rigid_sim_config.solver_type == gs.constraint_solver.CG):
-        qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, block_dim=32)
-        for i_b in range(_B):
-            func_solve_mass_batch(
-                i_b,
-                constraint_state.grad,
-                constraint_state.Mgrad,
-                array_class.PLACEHOLDER,
-                entities_info=entities_info,
-                rigid_global_info=rigid_global_info,
-                static_rigid_sim_config=static_rigid_sim_config,
-                is_backward=False,
-            )
+        # Wave-cooperative LDLT back-solve: 1 wave (BLOCK_DIM=64) per (entity, env),
+        # mirrors func_cholesky_solve_tiled for the Newton path. Replaces the serial
+        # per-env func_solve_mass_batch loop.
+        func_solve_mass_tiled(
+            constraint_state.grad,
+            constraint_state.Mgrad,
+            entities_info=entities_info,
+            rigid_global_info=rigid_global_info,
+            static_rigid_sim_config=static_rigid_sim_config,
+        )
 
     if qd.static(static_rigid_sim_config.solver_type == gs.constraint_solver.Newton):
         func_cholesky_solve_tiled(constraint_state, static_rigid_sim_config)
