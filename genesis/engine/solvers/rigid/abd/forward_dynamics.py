@@ -310,16 +310,23 @@ def func_compute_mass_matrix_lds(
 
     n_entities = entities_info.n_links.shape[0]
     _B = links_state.pos.shape[1]
+    n_thread_entities = awake_entities.shape[0] if qd.static(static_rigid_sim_config.use_hibernation) else n_entities
 
     qd.loop_config(block_dim=BLOCK_DIM)
-    for i in range(n_entities * _B * BLOCK_DIM):
+    for i in range(n_thread_entities * _B * BLOCK_DIM):
         tid = i % BLOCK_DIM
-        i_e = (i // BLOCK_DIM) % n_entities
-        i_b = i // (BLOCK_DIM * n_entities)
+        i_e_local = (i // BLOCK_DIM) % n_thread_entities
+        i_b = i // (BLOCK_DIM * n_thread_entities)
 
         if i_b >= _B:
             continue
 
+        if qd.static(static_rigid_sim_config.use_hibernation):
+            if not func_check_index_range(i_e_local, awake_entities.shape[0]):
+                continue
+            i_e = awake_entities[i_e_local, i_b]
+        else:
+            i_e = i_e_local
         entity_dof_start = entities_info.dof_start[i_e]
         entity_dof_end = entities_info.dof_end[i_e]
         n_dofs = entities_info.n_dofs[i_e]
