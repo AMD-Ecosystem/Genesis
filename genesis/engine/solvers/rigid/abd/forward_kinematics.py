@@ -1011,13 +1011,17 @@ def func_forward_velocity_entity(
     R = qd.static(func_read_field_if)
     A = qd.static(func_atomic_add_if)
     i_b = qd.cast(i_b, qd.i32)
+    link_start = entities_info.link_start[i_e]
+    link_end = entities_info.link_end[i_e]
+    # n_links = link_end - link_start
 
     for i_l_ in (
-        range(entities_info.link_start[i_e], entities_info.link_end[i_e])
+        range(link_start, link_end)
         if qd.static(not BW)
         else qd.static(range(static_rigid_sim_config.max_n_links_per_entity))
     ):
-        i_l = gs.qd_int(i_l_ if qd.static(not BW) else (i_l_ + entities_info.link_start[i_e]))
+        # i_l = gs.qd_int(i_l_ if qd.static(not BW) else (i_l_ + entities_info.link_start[i_e]))
+        i_l = link_start + i_l_
 
         if func_check_index_range(i_l, entities_info.link_start[i_e], entities_info.link_end[i_e], BW):
             I_l = [i_l, i_b] if qd.static(static_rigid_sim_config.batch_links_info) else i_l
@@ -1047,12 +1051,22 @@ def func_forward_velocity_entity(
                     next_I = (i_l, 0 if qd.static(not BW) else i_j_ + 1, i_b)
 
                     if joint_type == gs.JOINT_TYPE.FREE:
-                        for i_3 in qd.static(range(3)):
-                            _vel = dofs_state.cdof_vel[dof_start + i_3, i_b] * dofs_state.vel[dof_start + i_3, i_b]
-                            _ang = dofs_state.cdof_ang[dof_start + i_3, i_b] * dofs_state.vel[dof_start + i_3, i_b]
+                        tmp_vel = qd.Vector.zero(gs.qd_float, 3)
+                        tmp_ang = qd.Vector.zero(gs.qd_float, 3)
 
-                            cvel_vel = cvel_vel + A(links_state.cd_vel_bw, curr_I, _vel, BW)
-                            cvel_ang = cvel_ang + A(links_state.cd_ang_bw, curr_I, _ang, BW)
+                        for i_3 in qd.static(range(3)):
+                            idx = dof_start + i_3
+
+                            v   = dofs_state.vel[idx, i_b]
+                            cdv = dofs_state.cdof_vel[idx, i_b]
+                            cda = dofs_state.cdof_ang[idx, i_b]
+
+                            tmp_vel = tmp_vel + cdv * v
+                            tmp_ang = tmp_ang + cda * v
+
+                        cvel_vel = cvel_vel + A(links_state.cd_vel_bw, curr_I, tmp_vel, BW)
+                        cvel_ang = cvel_ang + A(links_state.cd_ang_bw, curr_I, tmp_ang, BW)
+
 
                         for i_3 in qd.static(range(3)):
                             (
