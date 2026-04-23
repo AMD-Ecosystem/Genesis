@@ -331,16 +331,25 @@ def func_compute_mass_matrix_lds(
         entity_dof_end = entities_info.dof_end[i_e]
         n_dofs = entities_info.n_dofs[i_e]
 
-        if n_dofs <= 0 or n_dofs > MAX_DOFS_PER_ENTITY:
+        # This kernel uses a dense local mass matrix in shared memory, so its LDS
+        # footprint is larger than kernels that use packed lower-triangular storage.
+        # Total bytes = 4 * (n^2 + 12n), where:
+        #   - n^2      comes from mass_mat_local[n, n]
+        #   - 12n      comes from 4 vector caches of shape [n, 3]
+        # Constraining that to ~64KB gives n <= 122 for 4-byte floats.
+        KERNEL_MAX_DOFS_PER_ENTITY = 122 if MAX_DOFS_PER_ENTITY > 122 else MAX_DOFS_PER_ENTITY
+
+        if n_dofs <= 0 or n_dofs > KERNEL_MAX_DOFS_PER_ENTITY:
             continue
 
-        # MAXIMUM LDS allocation for best performance (7168 bytes total)
-        f_ang_cache = qd.simt.block.SharedArray((MAX_DOFS_PER_ENTITY, 3), gs.qd_float)     # 32×3×4 = 384 bytes
-        f_vel_cache = qd.simt.block.SharedArray((MAX_DOFS_PER_ENTITY, 3), gs.qd_float)     # 32×3×4 = 384 bytes
-        cdof_ang_cache = qd.simt.block.SharedArray((MAX_DOFS_PER_ENTITY, 3), gs.qd_float)  # 32×3×4 = 384 bytes
-        cdof_vel_cache = qd.simt.block.SharedArray((MAX_DOFS_PER_ENTITY, 3), gs.qd_float)  # 32×3×4 = 384 bytes
-        mass_mat_local = qd.simt.block.SharedArray((MAX_DOFS_PER_ENTITY, MAX_DOFS_PER_ENTITY), gs.qd_float) # 32×32×4 = 4096 bytes
-        # Total: 5632 bytes theoretical, ~7168 bytes with padding - MAXIMUM performance!
+        # Shared-memory allocation sized to this kernel's actual dense-matrix budget.
+        f_ang_cache = qd.simt.block.SharedArray((KERNEL_MAX_DOFS_PER_ENTITY, 3), gs.qd_float)
+        f_vel_cache = qd.simt.block.SharedArray((KERNEL_MAX_DOFS_PER_ENTITY, 3), gs.qd_float)
+        cdof_ang_cache = qd.simt.block.SharedArray((KERNEL_MAX_DOFS_PER_ENTITY, 3), gs.qd_float)
+        cdof_vel_cache = qd.simt.block.SharedArray((KERNEL_MAX_DOFS_PER_ENTITY, 3), gs.qd_float)
+        mass_mat_local = qd.simt.block.SharedArray(
+            (KERNEL_MAX_DOFS_PER_ENTITY, KERNEL_MAX_DOFS_PER_ENTITY), gs.qd_float
+        )
 
         # Cooperative loading into LDS
         for load_round in range((n_dofs + BLOCK_DIM - 1) // BLOCK_DIM):
