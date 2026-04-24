@@ -1401,7 +1401,7 @@ def func_update_acc(
     BW = qd.static(is_backward)
 
     # Assume this is the outermost loop
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, block_dim=64)
     for i_0, i_b in (
         qd.ndrange(1, dofs_state.ctrl_mode.shape[1])
         if qd.static(static_rigid_sim_config.use_hibernation)
