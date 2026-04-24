@@ -50,6 +50,7 @@ def func_check_collision_valid(
         i_lb = geoms_info.link_idx[i_gb]
 
         # Filter out collision pairs that are involved in dynamically registered weld equality constraints
+        qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, block_dim=64)
         for i_eq in range(rigid_global_info.n_equalities[None], constraint_state.qd_n_equalities[i_b]):
             if equalities_info.eq_type[i_eq, i_b] == gs.EQUALITY_TYPE.WELD:
                 i_leqa = equalities_info.eq_obj1id[i_eq, i_b]
@@ -79,7 +80,7 @@ def func_collision_clear(
 ):
     _B = collider_state.n_contacts.shape[0]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, block_dim=64)
     for i_b in range(_B):
         if qd.static(static_rigid_sim_config.use_hibernation):
             collider_state.n_contacts_hibernated[i_b] = 0
@@ -164,7 +165,7 @@ def func_broad_phase(
     # Clear collider state
     func_collision_clear(links_state, links_info, collider_state, static_rigid_sim_config)
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL,block_dim=64)
     for i_b in range(_B):
         axis = 0
 
