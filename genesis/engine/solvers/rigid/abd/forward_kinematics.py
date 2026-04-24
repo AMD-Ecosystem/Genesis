@@ -975,16 +975,18 @@ def func_forward_kinematics_entity(
     R = qd.static(func_read_field_if)
     WR = qd.static(func_write_and_read_field_if)
     i_b = qd.cast(i_b, qd.i32)
+    link_start = entities_info.link_start[i_e]
+    link_end = entities_info.link_end[i_e]
 
     # Becomes static loop in backward pass, because we assume this loop is an inner loop
     for i_l_ in (
-        range(entities_info.link_start[i_e], entities_info.link_end[i_e])
+        range(link_start, link_end)
         if qd.static(not BW)
         else qd.static(range(static_rigid_sim_config.max_n_links_per_entity))
     ):
-        i_l = gs.qd_int(i_l_ if qd.static(not BW) else (i_l_ + entities_info.link_start[i_e]))
+        i_l = gs.qd_int(i_l_ if qd.static(not BW) else (i_l_ + link_start))
 
-        if func_check_index_range(i_l, entities_info.link_start[i_e], entities_info.link_end[i_e], BW):
+        if func_check_index_range(i_l, link_start, link_end, BW):
             I_l = [i_l, i_b] if qd.static(static_rigid_sim_config.batch_links_info) else i_l
             I_l0 = (i_l, 0, i_b)
 
@@ -1386,15 +1388,17 @@ def func_forward_velocity_entity(
     R = qd.static(func_read_field_if)
     A = qd.static(func_atomic_add_if)
     i_b = qd.cast(i_b, qd.i32)
+    link_start = entities_info.link_start[i_e]
+    link_end = entities_info.link_end[i_e]
 
     for i_l_ in (
-        range(entities_info.link_start[i_e], entities_info.link_end[i_e])
+        range(link_start, link_end)
         if qd.static(not BW)
         else qd.static(range(static_rigid_sim_config.max_n_links_per_entity))
     ):
-        i_l = gs.qd_int(i_l_ if qd.static(not BW) else (i_l_ + entities_info.link_start[i_e]))
+        i_l = gs.qd_int(i_l_ if qd.static(not BW) else (i_l_ + link_start))
 
-        if func_check_index_range(i_l, entities_info.link_start[i_e], entities_info.link_end[i_e], BW):
+        if func_check_index_range(i_l, link_start, link_end, BW):
             I_l = [i_l, i_b] if qd.static(static_rigid_sim_config.batch_links_info) else i_l
             n_joints = links_info.joint_end[I_l] - links_info.joint_start[I_l]
 
@@ -1423,38 +1427,44 @@ def func_forward_velocity_entity(
 
                     if joint_type == gs.JOINT_TYPE.FREE:
                         for i_3 in qd.static(range(3)):
-                            _vel = dofs_state.cdof_vel[dof_start + i_3, i_b] * dofs_state.vel[dof_start + i_3, i_b]
-                            _ang = dofs_state.cdof_ang[dof_start + i_3, i_b] * dofs_state.vel[dof_start + i_3, i_b]
+                            idx = dof_start + i_3
+                        
+                            v   = dofs_state.vel[idx, i_b]
+                            tmp_vel = dofs_state.cdof_vel[idx, i_b] * v
+                            tmp_ang = dofs_state.cdof_ang[idx, i_b] * v                       
+                            cvel_vel = cvel_vel + A(links_state.cd_vel_bw, curr_I, tmp_vel, BW)
+                            cvel_ang = cvel_ang + A(links_state.cd_ang_bw, curr_I, tmp_ang, BW)
 
-                            cvel_vel = cvel_vel + A(links_state.cd_vel_bw, curr_I, _vel, BW)
-                            cvel_ang = cvel_ang + A(links_state.cd_ang_bw, curr_I, _ang, BW)
-
+                        ang_curr = R(links_state.cd_ang_bw, curr_I, cvel_ang, BW)
+                        vel_curr = R(links_state.cd_vel_bw, curr_I, cvel_vel, BW)
                         for i_3 in qd.static(range(3)):
                             (
                                 dofs_state.cdofd_ang[dof_start + i_3, i_b],
                                 dofs_state.cdofd_vel[dof_start + i_3, i_b],
                             ) = qd.Vector.zero(gs.qd_float, 3), qd.Vector.zero(gs.qd_float, 3)
-
+                        
                             (
                                 dofs_state.cdofd_ang[dof_start + i_3 + 3, i_b],
                                 dofs_state.cdofd_vel[dof_start + i_3 + 3, i_b],
                             ) = gu.motion_cross_motion(
-                                R(links_state.cd_ang_bw, curr_I, cvel_ang, BW),
-                                R(links_state.cd_vel_bw, curr_I, cvel_vel, BW),
+                                ang_curr,
+                                vel_curr,
                                 dofs_state.cdof_ang[dof_start + i_3 + 3, i_b],
                                 dofs_state.cdof_vel[dof_start + i_3 + 3, i_b],
                             )
-
+                        
                         if qd.static(BW):
                             links_state.cd_vel_bw[next_I] = links_state.cd_vel_bw[curr_I]
                             links_state.cd_ang_bw[next_I] = links_state.cd_ang_bw[curr_I]
-
+                        
                         for i_3 in qd.static(range(3)):
+                            idx = dof_start + i_3 + 3
+                            v = dofs_state.vel[idx, i_b]
                             _vel = (
-                                dofs_state.cdof_vel[dof_start + i_3 + 3, i_b] * dofs_state.vel[dof_start + i_3 + 3, i_b]
+                                dofs_state.cdof_vel[idx, i_b] * v
                             )
                             _ang = (
-                                dofs_state.cdof_ang[dof_start + i_3 + 3, i_b] * dofs_state.vel[dof_start + i_3 + 3, i_b]
+                                dofs_state.cdof_ang[idx, i_b] * v
                             )
                             cvel_vel = cvel_vel + A(links_state.cd_vel_bw, next_I, _vel, BW)
                             cvel_ang = cvel_ang + A(links_state.cd_ang_bw, next_I, _ang, BW)

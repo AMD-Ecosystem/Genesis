@@ -1429,18 +1429,19 @@ def func_update_acc(
                     if qd.static(static_rigid_sim_config.use_hibernation)
                     else i_0
                 )
-
+                link_start = entities_info.link_start[i_e]
+                link_end = entities_info.link_end[i_e]
                 for i_l_ in (
-                    range(entities_info.link_start[i_e], entities_info.link_end[i_e])
+                    range(link_start, link_end)
                     if qd.static(not BW)
                     else qd.static(range(static_rigid_sim_config.max_n_links_per_entity))
                 ):
-                    i_l = i_l_ if qd.static(not BW) else (i_l_ + entities_info.link_start[i_e])
+                    i_l = i_l_ if qd.static(not BW) else (i_l_ + link_start)
 
                     if func_check_index_range(
                         i_l,
-                        entities_info.link_start[i_e],
-                        entities_info.link_end[i_e],
+                        link_start,
+                        link_end,
                         BW,
                     ):
                         I_l = [i_l, i_b] if qd.static(static_rigid_sim_config.batch_links_info) else i_l
@@ -1460,18 +1461,21 @@ def func_update_acc(
                             if qd.static(update_cacc):
                                 links_state.cacc_lin[i_l, i_b] = links_state.cacc_lin[i_p, i_b]
                                 links_state.cacc_ang[i_l, i_b] = links_state.cacc_ang[i_p, i_b]
-
+                        dof_start = links_info.dof_start[I_l]
+                        dof_end = links_info.dof_end[I_l]
                         for i_d_ in (
-                            range(links_info.dof_start[I_l], links_info.dof_end[I_l])
+                            range(dof_start, dof_end)
                             if qd.static(not BW)
                             else qd.static(range(static_rigid_sim_config.max_n_dofs_per_link))
                         ):
-                            i_d = i_d_ if qd.static(not BW) else (i_d_ + links_info.dof_start[I_l])
+                            i_d = i_d_ if qd.static(not BW) else (i_d_ + dof_start)
 
-                            if func_check_index_range(i_d, links_info.dof_start[I_l], links_info.dof_end[I_l], BW):
+                            if func_check_index_range(i_d, dof_start, dof_end, BW):
                                 # cacc = cacc_parent + cdofdot * qvel + cdof * qacc
-                                local_cdd_vel = dofs_state.cdofd_vel[i_d, i_b] * dofs_state.vel[i_d, i_b]
-                                local_cdd_ang = dofs_state.cdofd_ang[i_d, i_b] * dofs_state.vel[i_d, i_b]
+                                vel = dofs_state.vel[i_d, i_b]
+                                acc = dofs_state.acc[i_d, i_b]
+                                local_cdd_vel = dofs_state.cdofd_vel[i_d, i_b] * vel
+                                local_cdd_ang = dofs_state.cdofd_ang[i_d, i_b] * vel
 
                                 func_add_safe_backward(links_state.cdd_vel, [i_l, i_b], local_cdd_vel, BW)
                                 func_add_safe_backward(links_state.cdd_ang, [i_l, i_b], local_cdd_ang, BW)
@@ -1479,13 +1483,13 @@ def func_update_acc(
                                     func_add_safe_backward(
                                         links_state.cacc_lin,
                                         [i_l, i_b],
-                                        local_cdd_vel + dofs_state.cdof_vel[i_d, i_b] * dofs_state.acc[i_d, i_b],
+                                        local_cdd_vel + dofs_state.cdof_vel[i_d, i_b] * acc,
                                         BW,
                                     )
                                     func_add_safe_backward(
                                         links_state.cacc_ang,
                                         [i_l, i_b],
-                                        local_cdd_ang + dofs_state.cdof_ang[i_d, i_b] * dofs_state.acc[i_d, i_b],
+                                        local_cdd_ang + dofs_state.cdof_ang[i_d, i_b] * acc,
                                         BW,
                                     )
 
