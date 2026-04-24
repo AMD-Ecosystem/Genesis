@@ -979,6 +979,7 @@ def func_forward_kinematics_entity(
     link_end = entities_info.link_end[i_e]
 
     # Becomes static loop in backward pass, because we assume this loop is an inner loop
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL,block_dim=64)
     for i_l_ in (
         range(link_start, link_end)
         if qd.static(not BW)
@@ -1390,7 +1391,7 @@ def func_forward_velocity_entity(
     i_b = qd.cast(i_b, qd.i32)
     link_start = entities_info.link_start[i_e]
     link_end = entities_info.link_end[i_e]
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL,block_dim=256)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL,block_dim=64)
     for i_l_ in (
         range(link_start, link_end)
         if qd.static(not BW)
