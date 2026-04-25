@@ -681,7 +681,8 @@ class Collider:
             narrowphase._func_reset_narrowphase_work_queues(
                 self._collider_state,
             )
-            narrowphase._func_narrowphase_contact0(
+            # Split kernel calls: capsule-capsule
+            narrowphase._func_narrowphase_contact0_capsule_capsule(
                 self._solver.geoms_state,
                 self._solver.geoms_info,
                 self._solver.geoms_init_AABB,
@@ -700,6 +701,86 @@ class Collider:
                 self._solver._B,
                 self._contact0_n_chunks,
             )
+            # Split kernel calls: sphere-capsule
+            narrowphase._func_narrowphase_contact0_sphere_capsule(
+                self._solver.geoms_state,
+                self._solver.geoms_info,
+                self._solver.geoms_init_AABB,
+                self._solver.verts_info,
+                self._solver._rigid_global_info,
+                self._solver._static_rigid_sim_config,
+                self._collider_state,
+                self._collider_info,
+                self._collider_static_config,
+                self._contact0_mpr_state,
+                self._mpr._mpr_info,
+                self._contact0_gjk_state,
+                self._gjk._gjk_info,
+                self._support_field._support_field_info,
+                self._solver._errno,
+                self._solver._B,
+                self._contact0_n_chunks,
+            )
+            # Split kernel calls: plane
+            narrowphase._func_narrowphase_contact0_plane(
+                self._solver.geoms_state,
+                self._solver.geoms_info,
+                self._solver.geoms_init_AABB,
+                self._solver.verts_info,
+                self._solver._rigid_global_info,
+                self._solver._static_rigid_sim_config,
+                self._collider_state,
+                self._collider_info,
+                self._collider_static_config,
+                self._contact0_mpr_state,
+                self._mpr._mpr_info,
+                self._contact0_gjk_state,
+                self._gjk._gjk_info,
+                self._support_field._support_field_info,
+                self._solver._errno,
+                self._solver._B,
+                self._contact0_n_chunks,
+            )
+            # Split kernel calls: general geometry
+            narrowphase._func_narrowphase_contact0_general(
+                self._solver.geoms_state,
+                self._solver.geoms_info,
+                self._solver.geoms_init_AABB,
+                self._solver.verts_info,
+                self._solver._rigid_global_info,
+                self._solver._static_rigid_sim_config,
+                self._collider_state,
+                self._collider_info,
+                self._collider_static_config,
+                self._contact0_mpr_state,
+                self._mpr._mpr_info,
+                self._contact0_gjk_state,
+                self._gjk._gjk_info,
+                self._support_field._support_field_info,
+                self._solver._errno,
+                self._solver._B,
+                self._contact0_n_chunks,
+            )
+            # # Monolithic kernel (commented out for comparison)
+            # narrowphase._func_narrowphase_contact0(
+            #     self._solver.geoms_state,
+            #     self._solver.geoms_info,
+            #     self._solver.geoms_init_AABB,
+            #     self._solver.verts_info,
+            #     self._solver._rigid_global_info,
+            #     self._solver._static_rigid_sim_config,
+            #     self._collider_state,
+            #     self._collider_info,
+            #     self._collider_static_config,
+            #     self._contact0_mpr_state,
+            #     self._mpr._mpr_info,
+            #     self._contact0_gjk_state,
+            #     self._gjk._gjk_info,
+            #     self._support_field._support_field_info,
+            #     self._solver._errno,
+            #     self._solver._B,
+            #     self._contact0_n_chunks,
+            # )
             self._call_multicontact()
             narrowphase._func_prepare_gjk_rerun(self._collider_state)
             self._call_multicontact()
