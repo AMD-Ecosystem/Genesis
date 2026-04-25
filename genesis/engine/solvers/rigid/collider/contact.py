@@ -449,9 +449,19 @@ def func_sort_contacts(
     contact.  The stable insertion sort then reorders groups spatially while
     preserving the narrowphase ordering within each group.
 
+    **Determinism:** ties on the X-coordinate are broken by ``(geom_a,
+    geom_b)`` of the group, which is fully determined by the broad-phase
+    pair set (independent of narrowphase atomicAdd ordering). This means
+    the post-sort contact array is bit-identical regardless of the order
+    in which narrowphase atomically claimed contact slots — which is the
+    cascade-killer that lets wave-cooperative AVA broad-phase live alongside
+    the rest of the pipeline without forcing the constraint solver into
+    extra CG iterations.
+
     Two-phase approach to minimise memory traffic:
     1. Insertion sort on a compact (key, index) pair — 8 bytes per swap
-       instead of moving all 11 contact fields (~92 bytes).
+       instead of moving all 11 contact fields (~92 bytes). The compare is
+       a multi-field lex compare on (key, ga, gb).
     2. In-place cycle-following permutation that moves each contact record
        exactly once.
     """
@@ -462,6 +472,9 @@ def func_sort_contacts(
         n = collider_state.n_contacts[i_b]
 
         # Phase 1: initialise and insertion-sort the (key, idx) arrays.
+        # `contact_sort_idx[i]` stores the ORIGINAL contact index for the
+        # entry now logically at position `i`; ga/gb for tie-breaking are
+        # read via that original index from contact_data.geom_a/geom_b.
         group_key = gs.qd_float(0.0)
         for i in range(n):
             ga = collider_state.contact_data.geom_a[i, i_b]
@@ -477,16 +490,45 @@ def func_sort_contacts(
 
         for i in range(1, n):
             curr_key = collider_state.contact_sort_key[i, i_b]
-            if collider_state.contact_sort_key[i - 1, i_b] <= curr_key:
-                continue
-
             curr_idx = collider_state.contact_sort_idx[i, i_b]
+            curr_ga = collider_state.contact_data.geom_a[curr_idx, i_b]
+            curr_gb = collider_state.contact_data.geom_b[curr_idx, i_b]
+
+            # Compare (i-1) <= (i) lex on (key, ga, gb).
+            prev_key = collider_state.contact_sort_key[i - 1, i_b]
+            prev_idx = collider_state.contact_sort_idx[i - 1, i_b]
+            if prev_key < curr_key:
+                continue
+            if prev_key == curr_key:
+                prev_ga = collider_state.contact_data.geom_a[prev_idx, i_b]
+                if prev_ga < curr_ga:
+                    continue
+                if prev_ga == curr_ga:
+                    prev_gb = collider_state.contact_data.geom_b[prev_idx, i_b]
+                    if prev_gb <= curr_gb:
+                        continue
+
+            # Need to shift current down to its correct position.
             j = i - 1
             while j >= 0:
-                if collider_state.contact_sort_key[j, i_b] <= curr_key:
+                j_key = collider_state.contact_sort_key[j, i_b]
+                j_idx = collider_state.contact_sort_idx[j, i_b]
+                # Stop when (j_key, ga_j, gb_j) <= (curr_key, curr_ga, curr_gb)
+                stop = False
+                if j_key < curr_key:
+                    stop = True
+                elif j_key == curr_key:
+                    j_ga = collider_state.contact_data.geom_a[j_idx, i_b]
+                    if j_ga < curr_ga:
+                        stop = True
+                    elif j_ga == curr_ga:
+                        j_gb = collider_state.contact_data.geom_b[j_idx, i_b]
+                        if j_gb <= curr_gb:
+                            stop = True
+                if stop:
                     break
-                collider_state.contact_sort_key[j + 1, i_b] = collider_state.contact_sort_key[j, i_b]
-                collider_state.contact_sort_idx[j + 1, i_b] = collider_state.contact_sort_idx[j, i_b]
+                collider_state.contact_sort_key[j + 1, i_b] = j_key
+                collider_state.contact_sort_idx[j + 1, i_b] = j_idx
                 j = j - 1
             collider_state.contact_sort_key[j + 1, i_b] = curr_key
             collider_state.contact_sort_idx[j + 1, i_b] = curr_idx

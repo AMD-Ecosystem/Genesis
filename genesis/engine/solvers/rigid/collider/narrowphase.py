@@ -1612,6 +1612,7 @@ def _func_narrowphase_multicontact_mixed(
     # and prepare_gjk_rerun kernels set to the correct start offset (0 normally,
     # k1_size for the GJK rerun pass). Slices are clamped to max_items_per_thread
     # to match the original behaviour where excess work was silently dropped.
+    qd.loop_config(force_inline=(gs.backend == gs.amdgpu))
     for i_tid in range(n_total_threads):
         if i_tid < qd.static(n_gjk_threads):
             slice_lo, slice_hi = _compute_thread_slice(
@@ -1784,6 +1785,7 @@ def _func_narrowphase_contact0(
     _grid_size = n_envs * n_chunks
     max_broad_pairs = collider_state.broad_collision_pairs.shape[0]
 
+    qd.loop_config(force_inline=(gs.backend == gs.amdgpu))
     for flat_idx in range(_grid_size):
         i_b = flat_idx // n_chunks
         chunk = flat_idx % n_chunks

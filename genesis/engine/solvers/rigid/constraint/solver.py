@@ -613,7 +613,10 @@ def add_collision_constraints(
     n_dofs = dofs_state.ctrl_mode.shape[0]
     max_contact_pairs = collider_state.contact_data.link_a.shape[0]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(
+        serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL,
+        force_inline=(gs.backend == gs.amdgpu),
+    )
     for flat_idx in range(max_contact_pairs * _B):
         i_b = flat_idx % _B
         i_col = flat_idx // _B
@@ -1212,7 +1215,10 @@ def add_joint_limit_constraints(
     n_dofs = dofs_state.ctrl_mode.shape[0]
 
     # TODO: sparse mode
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    qd.loop_config(
+        serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL),
+        force_inline=(gs.backend == gs.amdgpu),
+    )
     for i_b in range(_B):
         for i_l in range(n_links):
             I_l = [i_l, i_b] if qd.static(static_rigid_sim_config.batch_links_info) else i_l
@@ -1273,7 +1279,8 @@ def add_frictionloss_constraints(
     # FIXME: The condition `if dofs_info.frictionloss[I_d] > EPS:` is not correctly evaluated on Apple Metal
     # if `serialize=True`...
     qd.loop_config(
-        serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL and gs.backend != gs.metal)
+        serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL and gs.backend != gs.metal),
+        force_inline=(gs.backend == gs.amdgpu),
     )
     for i_b in range(_B):
         constraint_state.n_constraints_frictionloss[i_b] = 0
@@ -2771,7 +2778,7 @@ def func_update_gradient_tiled(
         )
 
     if qd.static(static_rigid_sim_config.solver_type == gs.constraint_solver.CG):
-        qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, block_dim=32)
+        qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, block_dim=64)
         for i_b in range(_B):
             func_solve_mass_batch(
                 i_b,
@@ -3161,7 +3168,10 @@ def func_solve_body_monolith(
 ):
     _B = constraint_state.grad.shape[1]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, block_dim=32)
+    qd.loop_config(
+        serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL,
+        block_dim=32,
+    )
     for i_b in range(_B):
         if constraint_state.n_constraints[i_b] > 0:
             for _ in range(rigid_global_info.iterations[None]):

@@ -312,7 +312,7 @@ def func_compute_mass_matrix_lds(
     _B = links_state.pos.shape[1]
     n_thread_entities = rigid_global_info.awake_entities.shape[0] if qd.static(static_rigid_sim_config.use_hibernation) else n_entities
 
-    qd.loop_config(block_dim=BLOCK_DIM)
+    qd.loop_config(block_dim=BLOCK_DIM, force_inline=(gs.backend == gs.amdgpu))
     for i in range(n_thread_entities * _B * BLOCK_DIM):
         tid = i % BLOCK_DIM
         i_e_local = (i // BLOCK_DIM) % n_thread_entities
@@ -804,7 +804,7 @@ def func_factor_mass(
             MAX_DOFS_PER_ENTITY = qd.static(static_rigid_sim_config.tiled_n_dofs_per_entity)
             WARP_SIZE = qd.static(64)
 
-            qd.loop_config(block_dim=BLOCK_DIM)
+            qd.loop_config(block_dim=BLOCK_DIM, force_inline=(gs.backend == gs.amdgpu))
             for i in range(n_entities * _B * BLOCK_DIM):
                 tid = i % BLOCK_DIM
                 i_e = (i // BLOCK_DIM) % n_entities
@@ -1189,7 +1189,10 @@ def func_torque_and_passive_force(
     BW = qd.static(is_backward)
 
     # compute force based on each dof's ctrl mode
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(
+        serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL,
+        force_inline=(gs.backend == gs.amdgpu),
+    )
     for i_e, i_b in qd.ndrange(entities_info.n_links.shape[0], dofs_state.ctrl_mode.shape[1]):
         EPS = rigid_global_info.EPS[None]
 

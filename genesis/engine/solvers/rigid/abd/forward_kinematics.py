@@ -1574,7 +1574,9 @@ def func_forward_velocity(
                 is_backward,
             )
     else:
-        qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL))
+        # AMD-tuned: block_dim=64 matches wave64 hardware width and gives better
+        # latency hiding for this entity-walk kernel.
+        qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL), block_dim=64)
         for i_e, i_b in qd.ndrange(entities_info.n_links.shape[0], links_state.pos.shape[1]):
             func_forward_velocity_entity(
                 i_e,
@@ -2042,7 +2044,11 @@ def func_update_cartesian_space(
             )
     else:
         # FIXME: Implement parallelization at tree-level (based on root_idx) instead of entity-level
-        qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL), block_dim=64)
+        qd.loop_config(
+            serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL),
+            block_dim=64,
+            force_inline=(gs.backend == gs.amdgpu),
+        )
         for i_e, i_b in qd.ndrange(entities_info.n_links.shape[0], links_state.pos.shape[1]):
             i_l_start = entities_info.link_start[i_e]
             I_l_start = [i_l_start, i_b] if qd.static(static_rigid_sim_config.batch_links_info) else i_l_start
