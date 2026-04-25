@@ -68,14 +68,14 @@ class ContactIsland:
 
     @qd.kernel
     def clear(self):
-        qd.loop_config(serialize=self.solver._para_level < gs.PARA_LEVEL.ALL)
+        qd.loop_config(serialize=self.solver._para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
         for i_e, i_b in qd.ndrange(self.solver.n_entities, self.solver._B):
             self.entity_edge.n[i_e, i_b] = 0
             self.island_col.n[i_e, i_b] = 0
             self.island_entity.n[i_e, i_b] = 0
             self.entity_island[i_e, i_b] = -1
 
-        qd.loop_config(serialize=self.solver._para_level < gs.PARA_LEVEL.ALL)
+        qd.loop_config(serialize=self.solver._para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
         for i_b in range(self.solver._B):
             self.n_edges[i_b] = 0
             self.n_islands[i_b] = 0
@@ -104,7 +104,7 @@ class ContactIsland:
 
     @qd.kernel
     def add_contact_edges_to_islands(self):
-        qd.loop_config(serialize=self.solver._para_level < gs.PARA_LEVEL.ALL)
+        qd.loop_config(serialize=self.solver._para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
         for i_b in range(self.solver._B):
             for i_col in range(self.collider._collider_state.n_contacts[i_b]):
                 # get links indices of the impact
@@ -116,7 +116,7 @@ class ContactIsland:
     def add_hibernated_edges_to_islands(self):
         _B = self.solver._B
         n_entities = self.solver.n_entities
-        qd.loop_config(serialize=self.solver._para_level < gs.PARA_LEVEL.ALL)
+        qd.loop_config(serialize=self.solver._para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
         for i_b in range(_B):
             for i_e in range(n_entities):
                 next_entity_idx = self.entity_idx_to_next_entity_idx_in_hibernated_island[i_e, i_b]
@@ -136,7 +136,7 @@ class ContactIsland:
 
     @qd.kernel
     def postprocess_island_and_assign_contact_data(self):
-        qd.loop_config(serialize=self.solver._para_level < gs.PARA_LEVEL.ALL)
+        qd.loop_config(serialize=self.solver._para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
         for i_b in range(self.solver._B):
             for i_col in range(self.collider._collider_state.n_contacts[i_b]):
                 # get links indices of the impact
@@ -195,7 +195,7 @@ class ContactIsland:
 
     @qd.kernel
     def preprocess_island_and_map_entities_to_edges(self):
-        qd.loop_config(serialize=self.solver._para_level < gs.PARA_LEVEL.ALL)
+        qd.loop_config(serialize=self.solver._para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
         for i_b in range(self.solver._B):
             entity_list_start = 0
             for i in range(self.solver.n_entities):
@@ -224,7 +224,7 @@ class ContactIsland:
         """
         This assigns entities to islands, by setting their entity_island[entity_idx, batch_idx] = island_idx.
         """
-        qd.loop_config(serialize=self.solver._para_level < gs.PARA_LEVEL.ALL)
+        qd.loop_config(serialize=self.solver._para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
         for i_b in range(self.solver._B):
             for i_v in range(self.solver.n_entities):
                 # only create islands for entities with collisions and with dofs
@@ -264,7 +264,7 @@ class ContactIsland:
 
         # create single-entity islands for entities without collisions
         if self.solver._enable_joint_limit:
-            qd.loop_config(serialize=self.solver._para_level < gs.PARA_LEVEL.ALL)
+            qd.loop_config(serialize=self.solver._para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
             for i_b in range(self.solver._B):
                 for i_v in range(self.solver.n_entities):
                     if self.solver.entities_info.n_dofs[i_v] > 0 and self.entity_island[i_v, i_b] == -1:

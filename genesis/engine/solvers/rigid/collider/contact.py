@@ -39,7 +39,7 @@ def collider_kernel_reset(
 ):
     max_possible_pairs = collider_state.contact_cache.normal.shape[0]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_b_ in range(envs_idx.shape[0]):
         i_b = envs_idx[i_b_]
 
@@ -117,7 +117,7 @@ def kernel_collider_clear(
     static_rigid_sim_config: qd.template(),
     collider_state: array_class.ColliderState,
 ):
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_b_ in range(envs_idx.shape[0]):
         i_b = envs_idx[i_b_]
         func_collider_clear_env(i_b, links_state, links_info, static_rigid_sim_config, collider_state)
@@ -148,13 +148,13 @@ def collider_kernel_get_contacts(
 
     # TODO: Better implementation from Quadrants for this kind of reduction.
     n_contacts_max = gs.qd_int(0)
-    qd.loop_config(serialize=True)
+    qd.loop_config(serialize=True, force_inline=(gs.backend == gs.amdgpu))
     for i_b in range(_B):
         n_contacts = collider_state.n_contacts[i_b]
         if n_contacts > n_contacts_max:
             n_contacts_max = n_contacts
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_b in range(_B):
         i_c_start = gs.qd_int(0)
         if qd.static(is_padded):
@@ -467,7 +467,7 @@ def func_sort_contacts(
     """
     _B = collider_state.n_contacts.shape[0]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_b in range(_B):
         n = collider_state.n_contacts[i_b]
 

@@ -34,15 +34,15 @@ def kernel_get_kinematic_state(
     n_links = links_pos.shape[1]
     _B = qpos.shape[0]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_q, i_b in qd.ndrange(n_qs, _B):
         qpos[i_b, i_q] = rigid_global_info.qpos[i_q, i_b]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_d, i_b in qd.ndrange(n_dofs, _B):
         vel[i_b, i_d] = dofs_state.vel[i_d, i_b]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_l, i_b in qd.ndrange(n_links, _B):
         for j in qd.static(range(3)):
             links_pos[i_b, i_l, j] = links_state.pos[i_l, i_b][j]
@@ -69,15 +69,15 @@ def kernel_set_kinematic_state(
     n_links = links_pos.shape[1]
     _B = envs_idx.shape[0]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_q, i_b_ in qd.ndrange(n_qs, _B):
         rigid_global_info.qpos[i_q, envs_idx[i_b_]] = qpos[envs_idx[i_b_], i_q]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_d, i_b_ in qd.ndrange(n_dofs, _B):
         dofs_state.vel[i_d, envs_idx[i_b_]] = dofs_vel[envs_idx[i_b_], i_d]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_l, i_b_ in qd.ndrange(n_links, _B):
         for j in qd.static(range(3)):
             links_state.pos[i_l, envs_idx[i_b_]][j] = links_pos[envs_idx[i_b_], i_l, j]
@@ -108,16 +108,16 @@ def kernel_get_state(
     n_geoms = friction_ratio.shape[1]
     _B = qpos.shape[0]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_q, i_b in qd.ndrange(n_qs, _B):
         qpos[i_b, i_q] = rigid_global_info.qpos[i_q, i_b]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_d, i_b in qd.ndrange(n_dofs, _B):
         vel[i_b, i_d] = dofs_state.vel[i_d, i_b]
         acc[i_b, i_d] = dofs_state.acc[i_d, i_b]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_l, i_b in qd.ndrange(n_links, _B):
         for j in qd.static(range(3)):
             links_pos[i_b, i_l, j] = links_state.pos[i_l, i_b][j]
@@ -126,7 +126,7 @@ def kernel_get_state(
             links_quat[i_b, i_l, j] = links_state.quat[i_l, i_b][j]
         mass_shift[i_b, i_l] = links_state.mass_shift[i_l, i_b]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_l, i_b in qd.ndrange(n_geoms, _B):
         friction_ratio[i_b, i_l] = geoms_state.friction_ratio[i_l, i_b]
 
@@ -154,18 +154,18 @@ def kernel_set_state(
     n_geoms = friction_ratio.shape[1]
     _B = envs_idx.shape[0]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_q, i_b_ in qd.ndrange(n_qs, _B):
         rigid_global_info.qpos[i_q, envs_idx[i_b_]] = qpos[envs_idx[i_b_], i_q]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_d, i_b_ in qd.ndrange(n_dofs, _B):
         dofs_state.vel[i_d, envs_idx[i_b_]] = dofs_vel[envs_idx[i_b_], i_d]
         dofs_state.acc[i_d, envs_idx[i_b_]] = dofs_acc[envs_idx[i_b_], i_d]
         dofs_state.ctrl_force[i_d, envs_idx[i_b_]] = gs.qd_float(0.0)
         dofs_state.ctrl_mode[i_d, envs_idx[i_b_]] = gs.CTRL_MODE.FORCE
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_l, i_b_ in qd.ndrange(n_links, _B):
         for j in qd.static(range(3)):
             links_state.pos[i_l, envs_idx[i_b_]][j] = links_pos[envs_idx[i_b_], i_l, j]
@@ -176,7 +176,7 @@ def kernel_set_state(
             links_state.quat[i_l, envs_idx[i_b_]][j] = links_quat[envs_idx[i_b_], i_l, j]
         links_state.mass_shift[i_l, envs_idx[i_b_]] = mass_shift[envs_idx[i_b_], i_l]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_l, i_b_ in qd.ndrange(n_geoms, _B):
         geoms_state.friction_ratio[i_l, envs_idx[i_b_]] = friction_ratio[envs_idx[i_b_], i_l]
 
@@ -197,15 +197,15 @@ def kernel_get_state_grad(
     n_links = links_pos_grad.shape[1]
     _B = qpos_grad.shape[0]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_q, i_b in qd.ndrange(n_qs, _B):
         qd.atomic_add(rigid_global_info.qpos.grad[i_q, i_b], qpos_grad[i_b, i_q])
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_d, i_b in qd.ndrange(n_dofs, _B):
         qd.atomic_add(dofs_state.vel.grad[i_d, i_b], vel_grad[i_b, i_d])
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_l, i_b in qd.ndrange(n_links, _B):
         for j in qd.static(range(3)):
             qd.atomic_add(links_state.pos.grad[i_l, i_b][j], links_pos_grad[i_b, i_l, j])
@@ -224,7 +224,7 @@ def kernel_set_links_pos(
     rigid_global_info: array_class.RigidGlobalInfo,
     static_rigid_sim_config: qd.template(),
 ):
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_l_, i_b_ in qd.ndrange(links_idx.shape[0], envs_idx.shape[0]):
         i_b = envs_idx[i_b_]
         i_l = links_idx[i_l_]
@@ -261,7 +261,7 @@ def kernel_wake_up_entities_by_links(
     static_rigid_sim_config: qd.template(),
 ):
     """Wake up entities that own the specified links by setting their hibernated flags to False."""
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_l_, i_b_ in qd.ndrange(links_idx.shape[0], envs_idx.shape[0]):
         i_b = envs_idx[i_b_]
         i_l = links_idx[i_l_]
@@ -304,7 +304,7 @@ def kernel_set_links_pos_grad(
     rigid_global_info: array_class.RigidGlobalInfo,
     static_rigid_sim_config: qd.template(),
 ):
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_l_, i_b_ in qd.ndrange(links_idx.shape[0], envs_idx.shape[0]):
         i_b = envs_idx[i_b_]
         i_l = links_idx[i_l_]
@@ -332,7 +332,7 @@ def kernel_set_links_quat(
     rigid_global_info: array_class.RigidGlobalInfo,
     static_rigid_sim_config: qd.template(),
 ):
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_l_, i_b_ in qd.ndrange(links_idx.shape[0], envs_idx.shape[0]):
         i_b = envs_idx[i_b_]
         i_l = links_idx[i_l_]
@@ -385,7 +385,7 @@ def kernel_set_links_quat_grad(
     rigid_global_info: array_class.RigidGlobalInfo,
     static_rigid_sim_config: qd.template(),
 ):
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_l_, i_b_ in qd.ndrange(links_idx.shape[0], envs_idx.shape[0]):
         i_b = envs_idx[i_b_]
         i_l = links_idx[i_l_]
@@ -410,7 +410,7 @@ def kernel_set_links_mass_shift(
     links_state: array_class.LinksState,
     static_rigid_sim_config: qd.template(),
 ):
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_l_, i_b_ in qd.ndrange(links_idx.shape[0], envs_idx.shape[0]):
         links_state.mass_shift[links_idx[i_l_], envs_idx[i_b_]] = mass[i_b_, i_l_]
 
@@ -423,7 +423,7 @@ def kernel_set_links_COM_shift(
     links_state: array_class.LinksState,
     static_rigid_sim_config: qd.template(),
 ):
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_l_, i_b_ in qd.ndrange(links_idx.shape[0], envs_idx.shape[0]):
         for j in qd.static(range(3)):
             links_state.i_pos_shift[links_idx[i_l_], envs_idx[i_b_]][j] = com[i_b_, i_l_, j]
@@ -437,7 +437,7 @@ def kernel_set_links_inertial_mass(
     links_info: array_class.LinksInfo,
     static_rigid_sim_config: qd.template(),
 ):
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     if qd.static(static_rigid_sim_config.batch_links_info):
         for i_l_, i_b_ in qd.ndrange(links_idx.shape[0], envs_idx.shape[0]):
             links_info.inertial_mass[links_idx[i_l_], envs_idx[i_b_]] = inertial_mass[i_b_, i_l_]
@@ -454,7 +454,7 @@ def kernel_adjust_link_inertia(
     links_info: array_class.LinksInfo,
     static_rigid_sim_config: qd.template(),
 ):
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     if qd.static(static_rigid_sim_config.batch_links_info):
         for i_l_, i_b_ in qd.ndrange(links_idx.shape[0], envs_idx.shape[0]):
             r = ratio[i_b_, i_l_]
@@ -481,7 +481,7 @@ def kernel_set_geoms_friction_ratio(
     geoms_state: array_class.GeomsState,
     static_rigid_sim_config: qd.template(),
 ):
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_g_, i_b_ in qd.ndrange(geoms_idx.shape[0], envs_idx.shape[0]):
         geoms_state.friction_ratio[geoms_idx[i_g_], envs_idx[i_b_]] = friction_ratio[i_b_, i_g_]
 
@@ -494,7 +494,7 @@ def kernel_set_qpos(
     rigid_global_info: array_class.RigidGlobalInfo,
     static_rigid_sim_config: qd.template(),
 ):
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_q_, i_b_ in qd.ndrange(qs_idx.shape[0], envs_idx.shape[0]):
         rigid_global_info.qpos[qs_idx[i_q_], envs_idx[i_b_]] = qpos[i_b_, i_q_]
 
@@ -512,18 +512,18 @@ def kernel_set_global_sol_params(
     n_equalities = equalities_info.sol_params.shape[0]
     _B = equalities_info.sol_params.shape[1]
 
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
     for i_g in range(n_geoms):
         for j in qd.static(range(7)):
             geoms_info.sol_params[i_g][j] = sol_params[j]
 
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
     for i_j, i_b in qd.ndrange(n_joints, _B):
         I_j = [i_j, i_b] if qd.static(static_rigid_sim_config.batch_joints_info) else i_j
         for j in qd.static(range(7)):
             joints_info.sol_params[I_j][j] = sol_params[j]
 
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
     for i_eq, i_b in qd.ndrange(n_equalities, _B):
         for j in qd.static(range(7)):
             equalities_info.sol_params[i_eq, i_b][j] = sol_params[j]
@@ -541,12 +541,12 @@ def kernel_set_sol_params(
     static_rigid_sim_config: qd.template(),
 ):
     if qd.static(constraint_type == 0):  # geometries
-        qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+        qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
         for i_g_ in range(inputs_idx.shape[0]):
             for j in qd.static(range(7)):
                 geoms_info.sol_params[inputs_idx[i_g_]][j] = sol_params[i_g_, j]
     if qd.static(constraint_type == 1):  # joints
-        qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+        qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
         if qd.static(static_rigid_sim_config.batch_joints_info):
             for i_j_, i_b_ in qd.ndrange(inputs_idx.shape[0], envs_idx.shape[0]):
                 for j in qd.static(range(7)):
@@ -556,7 +556,7 @@ def kernel_set_sol_params(
                 for j in qd.static(range(7)):
                     joints_info.sol_params[inputs_idx[i_j_]][j] = sol_params[i_j_, j]
     if qd.static(constraint_type == 2):  # equalities
-        qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+        qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
         for i_eq_, i_b_ in qd.ndrange(inputs_idx.shape[0], envs_idx.shape[0]):
             for j in qd.static(range(7)):
                 equalities_info.sol_params[inputs_idx[i_eq_], envs_idx[i_b_]][j] = sol_params[i_b_, i_eq_, j]
@@ -570,7 +570,7 @@ def kernel_set_dofs_kp(
     dofs_info: array_class.DofsInfo,
     static_rigid_sim_config: qd.template(),
 ):
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
     if qd.static(static_rigid_sim_config.batch_dofs_info):
         for i_d_, i_b_ in qd.ndrange(dofs_idx.shape[0], envs_idx.shape[0]):
             dofs_info.kp[dofs_idx[i_d_], envs_idx[i_b_]] = kp[i_b_, i_d_]
@@ -587,7 +587,7 @@ def kernel_set_dofs_kv(
     dofs_info: array_class.DofsInfo,
     static_rigid_sim_config: qd.template(),
 ):
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
     if qd.static(static_rigid_sim_config.batch_dofs_info):
         for i_d_, i_b_ in qd.ndrange(dofs_idx.shape[0], envs_idx.shape[0]):
             dofs_info.kv[dofs_idx[i_d_], envs_idx[i_b_]] = kv[i_b_, i_d_]
@@ -605,7 +605,7 @@ def kernel_set_dofs_force_range(
     dofs_info: array_class.DofsInfo,
     static_rigid_sim_config: qd.template(),
 ):
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
     if qd.static(static_rigid_sim_config.batch_dofs_info):
         for i_d_, i_b_ in qd.ndrange(dofs_idx.shape[0], envs_idx.shape[0]):
             dofs_info.force_range[dofs_idx[i_d_], envs_idx[i_b_]][0] = lower[i_b_, i_d_]
@@ -624,7 +624,7 @@ def kernel_set_dofs_stiffness(
     dofs_info: array_class.DofsInfo,
     static_rigid_sim_config: qd.template(),
 ):
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
     if qd.static(static_rigid_sim_config.batch_dofs_info):
         for i_d_, i_b_ in qd.ndrange(dofs_idx.shape[0], envs_idx.shape[0]):
             dofs_info.stiffness[dofs_idx[i_d_], envs_idx[i_b_]] = stiffness[i_b_, i_d_]
@@ -641,7 +641,7 @@ def kernel_set_dofs_armature(
     dofs_info: array_class.DofsInfo,
     static_rigid_sim_config: qd.template(),
 ):
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
     if qd.static(static_rigid_sim_config.batch_dofs_info):
         for i_d_, i_b_ in qd.ndrange(dofs_idx.shape[0], envs_idx.shape[0]):
             dofs_info.armature[dofs_idx[i_d_], envs_idx[i_b_]] = armature[i_b_, i_d_]
@@ -658,7 +658,7 @@ def kernel_set_dofs_damping(
     dofs_info: array_class.DofsInfo,
     static_rigid_sim_config: qd.template(),
 ):
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
     if qd.static(static_rigid_sim_config.batch_dofs_info):
         for i_d_, i_b_ in qd.ndrange(dofs_idx.shape[0], envs_idx.shape[0]):
             dofs_info.damping[dofs_idx[i_d_], envs_idx[i_b_]] = damping[i_b_, i_d_]
@@ -675,7 +675,7 @@ def kernel_set_dofs_frictionloss(
     dofs_info: array_class.DofsInfo,
     static_rigid_sim_config: qd.template(),
 ):
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
     if qd.static(static_rigid_sim_config.batch_dofs_info):
         for i_d_, i_b_ in qd.ndrange(dofs_idx.shape[0], envs_idx.shape[0]):
             dofs_info.frictionloss[dofs_idx[i_d_], envs_idx[i_b_]] = frictionloss[i_b_, i_d_]
@@ -693,7 +693,7 @@ def kernel_set_dofs_limit(
     dofs_info: array_class.DofsInfo,
     static_rigid_sim_config: qd.template(),
 ):
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
     if qd.static(static_rigid_sim_config.batch_dofs_info):
         for i_d_, i_b_ in qd.ndrange(dofs_idx.shape[0], envs_idx.shape[0]):
             dofs_info.limit[dofs_idx[i_d_], envs_idx[i_b_]][0] = lower[i_b_, i_d_]
@@ -712,7 +712,7 @@ def kernel_set_dofs_velocity(
     dofs_state: array_class.DofsState,
     static_rigid_sim_config: qd.template(),
 ):
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
     for i_d_, i_b_ in qd.ndrange(dofs_idx.shape[0], envs_idx.shape[0]):
         dofs_state.vel[dofs_idx[i_d_], envs_idx[i_b_]] = velocity[i_b_, i_d_]
 
@@ -725,7 +725,7 @@ def kernel_set_dofs_velocity_grad(
     dofs_state: array_class.DofsState,
     static_rigid_sim_config: qd.template(),
 ):
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL, force_inline=(gs.backend == gs.amdgpu))
     for i_d_, i_b_ in qd.ndrange(dofs_idx.shape[0], envs_idx.shape[0]):
         velocity_grad[i_b_, i_d_] = dofs_state.vel.grad[dofs_idx[i_d_], envs_idx[i_b_]]
         dofs_state.vel.grad[dofs_idx[i_d_], envs_idx[i_b_]] = 0.0
@@ -738,7 +738,7 @@ def kernel_set_dofs_zero_velocity(
     dofs_state: array_class.DofsState,
     static_rigid_sim_config: qd.template(),
 ):
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
     for i_d_, i_b_ in qd.ndrange(dofs_idx.shape[0], envs_idx.shape[0]):
         dofs_state.vel[dofs_idx[i_d_], envs_idx[i_b_]] = 0.0
 
@@ -757,13 +757,13 @@ def kernel_set_dofs_position(
 ):
     n_entities = entities_info.link_start.shape[0]
 
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
     for i_d_, i_b_ in qd.ndrange(dofs_idx.shape[0], envs_idx.shape[0]):
         dofs_state.pos[dofs_idx[i_d_], envs_idx[i_b_]] = position[i_b_, i_d_]
 
     # Note that qpos must be updated, as dofs_state.pos is not used for actual IK.
     # TODO: Make this more efficient by only taking care of releavant qs/dofs.
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
     for i_e, i_b_ in qd.ndrange(n_entities, envs_idx.shape[0]):
         i_b = envs_idx[i_b_]
         for i_l in range(entities_info.link_start[i_e], entities_info.link_end[i_e]):
@@ -824,7 +824,7 @@ def kernel_control_dofs_force(
     dofs_state: array_class.DofsState,
     static_rigid_sim_config: qd.template(),
 ):
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
     for i_d_, i_b_ in qd.ndrange(dofs_idx.shape[0], envs_idx.shape[0]):
         dofs_state.ctrl_mode[dofs_idx[i_d_], envs_idx[i_b_]] = gs.CTRL_MODE.FORCE
         dofs_state.ctrl_force[dofs_idx[i_d_], envs_idx[i_b_]] = force[i_b_, i_d_]
@@ -838,7 +838,7 @@ def kernel_control_dofs_velocity(
     dofs_state: array_class.DofsState,
     static_rigid_sim_config: qd.template(),
 ):
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
     for i_d_, i_b_ in qd.ndrange(dofs_idx.shape[0], envs_idx.shape[0]):
         i_d = dofs_idx[i_d_]
         i_b = envs_idx[i_b_]
@@ -855,7 +855,7 @@ def kernel_control_dofs_position(
     dofs_state: array_class.DofsState,
     static_rigid_sim_config: qd.template(),
 ):
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
     for i_d_, i_b_ in qd.ndrange(dofs_idx.shape[0], envs_idx.shape[0]):
         i_d = dofs_idx[i_d_]
         i_b = envs_idx[i_b_]
@@ -874,7 +874,7 @@ def kernel_control_dofs_position_velocity(
     dofs_state: array_class.DofsState,
     static_rigid_sim_config: qd.template(),
 ):
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL), force_inline=(gs.backend == gs.amdgpu))
     for i_d_, i_b_ in qd.ndrange(dofs_idx.shape[0], envs_idx.shape[0]):
         i_d = dofs_idx[i_d_]
         i_b = envs_idx[i_b_]
@@ -893,7 +893,7 @@ def kernel_get_links_vel(
     links_state: array_class.LinksState,
     static_rigid_sim_config: qd.template(),
 ):
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
     for i_l_, i_b_ in qd.ndrange(links_idx.shape[0], envs_idx.shape[0]):
         # This is the velocity in world coordinates expressed at global com-position
         vel = links_state.cd_vel[links_idx[i_l_], envs_idx[i_b_]]  # entity's CoM
@@ -920,7 +920,7 @@ def kernel_get_links_acc(
     links_state: array_class.LinksState,
     static_rigid_sim_config: qd.template(),
 ):
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
     for i_l_, i_b_ in qd.ndrange(links_idx.shape[0], envs_idx.shape[0]):
         i_l = links_idx[i_l_]
         i_b = envs_idx[i_b_]
@@ -949,7 +949,7 @@ def kernel_get_dofs_control_force(
     static_rigid_sim_config: qd.template(),
 ):
     # we need to compute control force here because this won't be computed until the next actual simulation step
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
     for i_d_, i_b_ in qd.ndrange(dofs_idx.shape[0], envs_idx.shape[0]):
         i_d = dofs_idx[i_d_]
         i_b = envs_idx[i_b_]
@@ -989,7 +989,7 @@ def kernel_set_drone_rpm(
     n_propellers = propellers_link_idx.shape[0]
     _B = propellers_rpm.shape[0]
 
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
     for i_b in range(_B):
         for i_prop in range(n_propellers):
             i_l = propellers_link_idx[i_prop]
@@ -1045,6 +1045,6 @@ def kernel_set_geoms_friction(
     geoms_info: array_class.GeomsInfo,
     static_rigid_sim_config: qd.template(),
 ):
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
     for i_g_ in range(geoms_idx.shape[0]):
         geoms_info.friction[geoms_idx[i_g_]] = friction[i_g_]

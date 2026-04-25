@@ -17,7 +17,7 @@ def kernel_build_efc_AR_b(
     _B = constraint_state.jac.shape[2]
     n_dofs = constraint_state.jac.shape[1]
 
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
     for i_b in range(_B):
         nefc = constraint_state.n_constraints[i_b]
         # zero AR
@@ -184,7 +184,7 @@ def kernel_noslip(
     _B = constraint_state.jac.shape[2]
     n_dofs = constraint_state.jac.shape[1]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_b in range(_B):
         # temp variables
         res = qd.Vector.zero(gs.qd_float, 5)
@@ -293,7 +293,7 @@ def kernel_dual_finish(
     n_dofs = constraint_state.qfrc_constraint.shape[0]
     _B = constraint_state.qfrc_constraint.shape[1]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_b in range(_B):
         # zero
         for i_d in range(n_dofs):
@@ -392,7 +392,7 @@ def compute_A_diag(
 ):
     _B = constraint_state.jac.shape[2]
     n_dofs = constraint_state.jac.shape[1]
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_b in range(_B):
         # For each constraint row i: Ai = Ji * M^{-1} * Ji^T
         for i_c in range(constraint_state.n_constraints[i_b]):

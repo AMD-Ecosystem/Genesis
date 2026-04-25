@@ -889,12 +889,12 @@ def func_com_links_split(
     _B = links_state.pos.shape[1]
 
     # Pass 1: zero-init `root_COM_bw` and `mass_sum` for every link.
-    qd.loop_config(serialize=serialize, block_dim=64)
+    qd.loop_config(serialize=serialize, block_dim=64, force_inline=(gs.backend == gs.amdgpu))
     for i_l, i_b in qd.ndrange(n_links, _B):
         func_com_pass1_zero_link(i_l, i_b, links_state)
 
     # Pass 2: 2-level outer loop over (root-entity, batch)
-    qd.loop_config(serialize=serialize, block_dim=64)
+    qd.loop_config(serialize=serialize, block_dim=64, force_inline=(gs.backend == gs.amdgpu))
     for i_e, i_b in qd.ndrange(entities_info.n_links.shape[0], _B):
         i_l_start = entities_info.link_start[i_e]
         I_l_start = [i_l_start, i_b] if qd.static(static_rigid_sim_config.batch_links_info) else i_l_start
@@ -916,21 +916,21 @@ def func_com_links_split(
                         )
 
     # Pass 3: only the root link normalizes its own `root_COM`.
-    qd.loop_config(serialize=serialize, block_dim=64)
+    qd.loop_config(serialize=serialize, block_dim=64, force_inline=(gs.backend == gs.amdgpu))
     for i_l, i_b in qd.ndrange(n_links, _B):
         func_com_pass3_normalize_root_link(
             i_l, i_b, links_state, links_info, rigid_global_info, static_rigid_sim_config,
         )
 
     # Pass 4: broadcast root's `root_COM` to every link in its tree.
-    qd.loop_config(serialize=serialize, block_dim=64)
+    qd.loop_config(serialize=serialize, block_dim=64, force_inline=(gs.backend == gs.amdgpu))
     for i_l, i_b in qd.ndrange(n_links, _B):
         func_com_pass4_broadcast_link(
             i_l, i_b, links_state, links_info, static_rigid_sim_config,
         )
 
     # Pass 5: per-link `i_pos` + `cinr_*` (reads pass-4 `root_COM`).
-    qd.loop_config(serialize=serialize, block_dim=64)
+    qd.loop_config(serialize=serialize, block_dim=64, force_inline=(gs.backend == gs.amdgpu))
     for i_l, i_b in qd.ndrange(n_links, _B):
         func_com_pass5_inertial_link(
             i_l, i_b, links_state, links_info, rigid_global_info, static_rigid_sim_config,
@@ -939,7 +939,7 @@ def func_com_links_split(
     # Pass 6: per-link joint pose (`j_pos`/`j_quat`). Only reads FK outputs, so
     # this pass has no data dependency on passes 1-5 and could in principle run
     # earlier, but we keep it here to minimize structural churn.
-    qd.loop_config(serialize=serialize, block_dim=64)
+    qd.loop_config(serialize=serialize, block_dim=64, force_inline=(gs.backend == gs.amdgpu))
     for i_l, i_b in qd.ndrange(n_links, _B):
         func_com_pass6_joint_pose_link(
             i_l, i_b, links_state, links_info, joints_info, static_rigid_sim_config, is_backward,
@@ -947,7 +947,7 @@ def func_com_links_split(
 
     # Pass 7: per-link motion subspace (`cdof_*`/`cdofvel_*`); reads pass-4
     # `root_COM` at the joint anchor.
-    qd.loop_config(serialize=serialize, block_dim=64)
+    qd.loop_config(serialize=serialize, block_dim=64, force_inline=(gs.backend == gs.amdgpu))
     for i_l, i_b in qd.ndrange(n_links, _B):
         func_com_pass7_cdof_link(
             i_l, i_b, links_state, links_info, joints_state, joints_info, dofs_state,
@@ -1311,7 +1311,7 @@ def func_update_geoms(
 ):
     # This loop must be the outermost loop to be differentiable
     if qd.static(static_rigid_sim_config.use_hibernation):
-        qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+        qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
         for i_b in range(links_state.pos.shape[1]):
             func_update_geoms_batch(
                 i_b,
@@ -1325,7 +1325,7 @@ def func_update_geoms(
                 is_backward,
             )
     else:
-        qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL))
+        qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL), force_inline=(gs.backend == gs.amdgpu))
         for i_e, i_b in qd.ndrange(entities_info.n_links.shape[0], links_state.pos.shape[1]):
             func_update_geoms_entity(
                 i_e,
@@ -1560,7 +1560,7 @@ def func_forward_velocity(
 ):
     # This loop must be the outermost loop to be differentiable
     if qd.static(static_rigid_sim_config.use_hibernation):
-        qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+        qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
         for i_b in range(links_state.pos.shape[1]):
             func_forward_velocity_batch(
                 i_b,
@@ -1576,7 +1576,7 @@ def func_forward_velocity(
     else:
         # AMD-tuned: block_dim=64 matches wave64 hardware width and gives better
         # latency hiding for this entity-walk kernel.
-        qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL), block_dim=64)
+        qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL), block_dim=64, force_inline=(gs.backend == gs.amdgpu))
         for i_e, i_b in qd.ndrange(entities_info.n_links.shape[0], links_state.pos.shape[1]):
             func_forward_velocity_entity(
                 i_e,
@@ -1605,7 +1605,7 @@ def kernel_update_verts_for_geoms(
     n_geoms = geoms_idx.shape[0]
     _B = geoms_state.verts_updated.shape[1]
 
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL), force_inline=(gs.backend == gs.amdgpu))
     for i_g_, i_b in qd.ndrange(n_geoms, _B):
         i_g = geoms_idx[i_g_]
         func_update_verts_for_geom(i_g, i_b, geoms_state, geoms_info, verts_info, free_verts_state, fixed_verts_state)
@@ -1653,7 +1653,7 @@ def func_update_all_verts(
 ):
     n_geoms, _B = geoms_state.pos.shape
 
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL), force_inline=(gs.backend == gs.amdgpu))
     for i_g, i_b in qd.ndrange(n_geoms, _B):
         func_update_verts_for_geom(i_g, i_b, geoms_state, geoms_info, verts_info, free_verts_state, fixed_verts_state)
 
@@ -1681,7 +1681,7 @@ def kernel_update_geom_aabbs(
     n_geoms = geoms_state.pos.shape[0]
     _B = geoms_state.pos.shape[1]
 
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
     for i_g, i_b in qd.ndrange(n_geoms, _B):
         g_pos = geoms_state.pos[i_g, i_b]
         g_quat = geoms_state.quat[i_g, i_b]
@@ -1710,7 +1710,7 @@ def kernel_update_vgeoms(
     n_vgeoms = vgeoms_info.link_idx.shape[0]
     _B = links_state.pos.shape[1]
 
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
     for i_g, i_b in qd.ndrange(n_vgeoms, _B):
         i_l = vgeoms_info.link_idx[i_g]
         vgeoms_state.pos[i_g, i_b], vgeoms_state.quat[i_g, i_b] = gu.qd_transform_pos_quat_by_trans_quat(
@@ -1734,7 +1734,7 @@ def func_hibernate__for_all_awake_islands_either_hiberanate_or_update_aabb_sort_
 ):
     _B = entities_state.hibernated.shape[1]
 
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
     for i_b in range(_B):
         for island_idx in range(contact_island_state.n_islands[i_b]):
             was_island_hibernated = contact_island_state.island_hibernated[island_idx, i_b]
@@ -1817,14 +1817,14 @@ def func_aggregate_awake_entities(
     _B = entities_state.hibernated.shape[1]
 
     # Reset counts once per batch (not per entity!)
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
     for i_b in range(_B):
         rigid_global_info.n_awake_entities[i_b] = 0
         rigid_global_info.n_awake_links[i_b] = 0
         rigid_global_info.n_awake_dofs[i_b] = 0
 
     # Count awake entities
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
     for i_e, i_b in qd.ndrange(n_entities, _B):
         if entities_state.hibernated[i_e, i_b] or entities_info.n_dofs[i_e] == 0:
             continue
@@ -1962,7 +1962,7 @@ def func_update_cartesian_space_batch(
     i_b = qd.cast(i_b, qd.i32)
 
     # This loop is considered an inner loop
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL), force_inline=(gs.backend == gs.amdgpu))
     for i_0 in (
         (
             # Dynamic inner loop for forward pass
@@ -2024,7 +2024,7 @@ def func_update_cartesian_space(
 
     # This loop must be the outermost loop to be differentiable
     if qd.static(static_rigid_sim_config.use_hibernation):
-        qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+        qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
         for i_b in range(links_state.pos.shape[1]):
             func_update_cartesian_space_batch(
                 i_b,

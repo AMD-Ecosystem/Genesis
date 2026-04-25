@@ -107,7 +107,7 @@ class ConstraintSolverIsland:
 
     @qd.kernel
     def _kernel_clear(self, envs_idx: qd.types.ndarray()):
-        qd.loop_config(serialize=self._solver._para_level < gs.PARA_LEVEL.ALL)
+        qd.loop_config(serialize=self._solver._para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
         for i_b_ in range(envs_idx.shape[0]):
             i_b = envs_idx[i_b_]
             self.n_constraints[i_b] = 0
@@ -502,7 +502,7 @@ class ConstraintSolverIsland:
 
     @qd.kernel
     def _kernel_reset(self, envs_idx: qd.types.ndarray()):
-        qd.loop_config(serialize=self._solver._para_level < gs.PARA_LEVEL.ALL)
+        qd.loop_config(serialize=self._solver._para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
         for i_b_ in range(envs_idx.shape[0]):
             i_b = envs_idx[i_b_]
             for i_d in range(self._solver.n_dofs_):

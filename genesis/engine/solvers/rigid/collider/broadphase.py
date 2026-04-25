@@ -89,7 +89,7 @@ def func_collision_clear(
 ):
     _B = collider_state.n_contacts.shape[0]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_b in range(_B):
         if qd.static(static_rigid_sim_config.use_hibernation):
             collider_state.n_contacts_hibernated[i_b] = 0
@@ -384,7 +384,7 @@ def func_broad_phase(
 
     # AMD-tuned: block_dim=64 matches wave64 hardware exactly while doubling
     # block count (vs default 128) to better fill MI300X CUs at 8192 envs.
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, block_dim=64)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, block_dim=64, force_inline=(gs.backend == gs.amdgpu))
     for i_b in range(_B):
         axis = 0
 

@@ -106,11 +106,11 @@ def _kernel_init_support(
     n_geoms = support_field_info.support_cell_start.shape[0]
     n_support_cells = support_field_info.support_v.shape[0]
 
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL), force_inline=(gs.backend == gs.amdgpu))
     for i in range(n_geoms):
         support_field_info.support_cell_start[i] = support_cell_start[i]
 
-    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL))
+    qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL), force_inline=(gs.backend == gs.amdgpu))
     for i in range(n_support_cells):
         support_field_info.support_vid[i] = support_vid[i]
         for j in qd.static(range(3)):

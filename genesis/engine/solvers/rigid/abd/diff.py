@@ -33,7 +33,7 @@ def func_copy_next_to_curr(
     n_dofs = dofs_state.vel.shape[0]
     _B = dofs_state.vel.shape[1]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_b in range(_B):
         # Prevent nan propagation
         is_valid = True
@@ -66,13 +66,13 @@ def func_copy_next_to_curr_grad(
     n_qs = rigid_global_info.qpos.shape[0]
     _B = dofs_state.vel.shape[1]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_d, i_b in qd.ndrange(n_dofs, _B):
         dofs_state.vel_next.grad[i_d, i_b] = dofs_state.vel.grad[i_d, i_b]
         dofs_state.vel.grad[i_d, i_b] = 0.0
         dofs_state.vel[i_d, i_b] = rigid_adjoint_cache.dofs_vel[f, i_d, i_b]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_q, i_b in qd.ndrange(n_qs, _B):
         rigid_global_info.qpos_next.grad[i_q, i_b] = rigid_global_info.qpos.grad[i_q, i_b]
         rigid_global_info.qpos.grad[i_q, i_b] = 0.0
@@ -102,12 +102,12 @@ def func_save_adjoint_cache(
     n_qs = rigid_global_info.qpos.shape[0]
     _B = dofs_state.vel.shape[1]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_d, i_b in qd.ndrange(n_dofs, _B):
         rigid_adjoint_cache.dofs_vel[f, i_d, i_b] = dofs_state.vel[i_d, i_b]
         rigid_adjoint_cache.dofs_acc[f, i_d, i_b] = dofs_state.acc[i_d, i_b]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_q, i_b in qd.ndrange(n_qs, _B):
         rigid_adjoint_cache.qpos[f, i_q, i_b] = rigid_global_info.qpos[i_q, i_b]
 
@@ -124,12 +124,12 @@ def func_load_adjoint_cache(
     n_qs = rigid_global_info.qpos.shape[0]
     _B = dofs_state.vel.shape[1]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_d, i_b in qd.ndrange(n_dofs, _B):
         dofs_state.vel[i_d, i_b] = rigid_adjoint_cache.dofs_vel[f, i_d, i_b]
         dofs_state.acc[i_d, i_b] = rigid_adjoint_cache.dofs_acc[f, i_d, i_b]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_q, i_b in qd.ndrange(n_qs, _B):
         rigid_global_info.qpos[i_q, i_b] = rigid_adjoint_cache.qpos[f, i_q, i_b]
 
@@ -256,12 +256,12 @@ def func_is_grad_valid(
     static_rigid_sim_config: qd.template(),
 ):
     is_valid = True
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for I in qd.grouped(qd.ndrange(*rigid_global_info.qpos.shape)):
         if qd.math.isnan(rigid_global_info.qpos.grad[I]):
             is_valid = False
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for I in qd.grouped(qd.ndrange(*dofs_state.vel.shape)):
         if qd.math.isnan(dofs_state.vel.grad[I]):
             is_valid = False
@@ -285,7 +285,7 @@ def func_copy_cartesian_space(
     # the outputs that were overwritten if we disabled mujoco compatibility for backward pass.
 
     # dofs state
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for I in qd.grouped(qd.ndrange(*dofs_state.pos.shape)):
         # pos, cdof_ang, cdof_vel, cdofvel_ang, cdofvel_vel, cdofd_ang, cdofd_vel
         dofs_state_adjoint_cache.pos[I] = dofs_state.pos[I]
@@ -297,7 +297,7 @@ def func_copy_cartesian_space(
         dofs_state_adjoint_cache.cdofd_vel[I] = dofs_state.cdofd_vel[I]
 
     # links state
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for I in qd.grouped(qd.ndrange(*links_state.pos.shape)):
         # pos, quat, root_COM, mass_sum, i_pos, i_quat, cinr_inertial, cinr_pos, cinr_quat, cinr_mass, j_pos, j_quat,
         # cd_vel, cd_ang
@@ -317,14 +317,14 @@ def func_copy_cartesian_space(
         links_state_adjoint_cache.cd_ang[I] = links_state.cd_ang[I]
 
     # joints state
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for I in qd.grouped(qd.ndrange(*joints_state.xanchor.shape)):
         # xanchor, xaxis
         joints_state_adjoint_cache.xanchor[I] = joints_state.xanchor[I]
         joints_state_adjoint_cache.xaxis[I] = joints_state.xaxis[I]
 
     # geoms state
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for I in qd.grouped(qd.ndrange(*geoms_state.pos.shape)):
         # pos, quat, verts_updated
         geoms_state_adjoint_cache.pos[I] = geoms_state.pos[I]
@@ -342,7 +342,7 @@ def kernel_copy_acc(
     n_dofs = dofs_state.vel.shape[0]
     _B = dofs_state.vel.shape[1]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, force_inline=(gs.backend == gs.amdgpu))
     for i_d, i_b in qd.ndrange(n_dofs, _B):
         dofs_state.acc[i_d, i_b] = rigid_adjoint_cache.dofs_acc[f, i_d, i_b]
 
