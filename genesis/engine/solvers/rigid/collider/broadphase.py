@@ -34,6 +34,7 @@ def func_check_collision_valid(
     i_ga,
     i_gb,
     i_b,
+    i_pair,
     links_state: array_class.LinksState,
     links_info: array_class.LinksInfo,
     geoms_info: array_class.GeomsInfo,
@@ -41,9 +42,8 @@ def func_check_collision_valid(
     static_rigid_sim_config: qd.template(),
     constraint_state: array_class.ConstraintState,
     equalities_info: array_class.EqualitiesInfo,
-    collider_info: array_class.ColliderInfo,
 ):
-    is_valid = collider_info.collision_pair_idx[i_ga, i_gb] != -1
+    is_valid = i_pair != -1
 
     if is_valid:
         i_la = geoms_info.link_idx[i_ga]
@@ -189,8 +189,9 @@ def func_broad_phase(
                     collider_state.sort_buffer.i_g[2 * i_buffer + 1, i_b] = i_g
                     collider_state.sort_buffer.is_max[2 * i_buffer + 1, i_b] = True
 
-                    geoms_state.min_buffer_idx[i_buffer, i_b] = 2 * i_g
-                    geoms_state.max_buffer_idx[i_buffer, i_b] = 2 * i_g + 1
+                    if qd.static(static_rigid_sim_config.use_hibernation):
+                        geoms_state.min_buffer_idx[i_buffer, i_b] = 2 * i_g
+                        geoms_state.max_buffer_idx[i_buffer, i_b] = 2 * i_g + 1
                     i_buffer = i_buffer + 1
 
             collider_state.first_time[i_b] = False
@@ -242,17 +243,24 @@ def func_broad_phase(
         if qd.static(not static_rigid_sim_config.use_hibernation):
             n_active = 0
             for i in range(2 * env_n_geoms):
-                if not collider_state.sort_buffer.is_max[i, i_b]:
+                # Hoist loop-invariant sort-buffer reads out of the inner per-active loop.
+                is_max_i = collider_state.sort_buffer.is_max[i, i_b]
+                i_g_i = collider_state.sort_buffer.i_g[i, i_b]
+                if not is_max_i:
                     for j in range(n_active):
                         i_ga = collider_state.active_buffer[j, i_b]
-                        i_gb = collider_state.sort_buffer.i_g[i, i_b]
+                        i_gb = i_g_i
                         if i_ga > i_gb:
                             i_ga, i_gb = i_gb, i_ga
 
+                        # Load collision_pair_idx once per pair and reuse it for both
+                        # the validity check and the contact-cache write below.
+                        i_pair = collider_info.collision_pair_idx[i_ga, i_gb]
                         if not func_check_collision_valid(
                             i_ga,
                             i_gb,
                             i_b,
+                            i_pair,
                             links_state,
                             links_info,
                             geoms_info,
@@ -260,14 +268,12 @@ def func_broad_phase(
                             static_rigid_sim_config,
                             constraint_state,
                             equalities_info,
-                            collider_info,
                         ):
                             continue
 
                         if not func_is_geom_aabbs_overlap(geoms_state, i_ga, i_gb, i_b):
                             # Clear collision normal cache if not in contact
                             if qd.static(not static_rigid_sim_config.enable_mujoco_compatibility):
-                                i_pair = collider_info.collision_pair_idx[i_ga, i_gb]
                                 collider_state.contact_cache.normal[i_pair, i_b] = qd.Vector.zero(gs.qd_float, 3)
                             continue
 
@@ -278,15 +284,15 @@ def func_broad_phase(
                         collider_state.broad_collision_pairs[n_broad, i_b][1] = i_gb
                         n_broad = n_broad + 1
 
-                    collider_state.active_buffer[n_active, i_b] = collider_state.sort_buffer.i_g[i, i_b]
+                    collider_state.active_buffer[n_active, i_b] = i_g_i
                     n_active = n_active + 1
                 else:
-                    i_g_to_remove = collider_state.sort_buffer.i_g[i, i_b]
+                    # Swap-and-pop removal: SAP only reads active_buffer as a set, so
+                    # preserving insertion order is unnecessary.
+                    i_g_to_remove = i_g_i
                     for j in range(n_active):
                         if collider_state.active_buffer[j, i_b] == i_g_to_remove:
-                            if j < n_active - 1:
-                                for k in range(j, n_active - 1):
-                                    collider_state.active_buffer[k, i_b] = collider_state.active_buffer[k + 1, i_b]
+                            collider_state.active_buffer[j, i_b] = collider_state.active_buffer[n_active - 1, i_b]
                             n_active = n_active - 1
                             break
         else:
@@ -294,20 +300,25 @@ def func_broad_phase(
                 n_active_awake = 0
                 n_active_hib = 0
                 for i in range(2 * env_n_geoms):
-                    is_incoming_geom_hibernated = geoms_state.hibernated[collider_state.sort_buffer.i_g[i, i_b], i_b]
+                    # Hoist loop-invariant sort-buffer reads out of the inner per-active loops.
+                    i_g_i = collider_state.sort_buffer.i_g[i, i_b]
+                    is_max_i = collider_state.sort_buffer.is_max[i, i_b]
+                    is_incoming_geom_hibernated = geoms_state.hibernated[i_g_i, i_b]
 
-                    if not collider_state.sort_buffer.is_max[i, i_b]:
+                    if not is_max_i:
                         # both awake and hibernated geom check with active awake geoms
                         for j in range(n_active_awake):
                             i_ga = collider_state.active_buffer_awake[j, i_b]
-                            i_gb = collider_state.sort_buffer.i_g[i, i_b]
+                            i_gb = i_g_i
                             if i_ga > i_gb:
                                 i_ga, i_gb = i_gb, i_ga
 
+                            i_pair = collider_info.collision_pair_idx[i_ga, i_gb]
                             if not func_check_collision_valid(
                                 i_ga,
                                 i_gb,
                                 i_b,
+                                i_pair,
                                 links_state,
                                 links_info,
                                 geoms_info,
@@ -315,14 +326,12 @@ def func_broad_phase(
                                 static_rigid_sim_config,
                                 constraint_state,
                                 equalities_info,
-                                collider_info,
                             ):
                                 continue
 
                             if not func_is_geom_aabbs_overlap(geoms_state, i_ga, i_gb, i_b):
                                 # Clear collision normal cache if not in contact
                                 if qd.static(not static_rigid_sim_config.enable_mujoco_compatibility):
-                                    i_pair = collider_info.collision_pair_idx[i_ga, i_gb]
                                     collider_state.contact_cache.normal[i_pair, i_b] = qd.Vector.zero(gs.qd_float, 3)
                                 continue
 
@@ -334,14 +343,16 @@ def func_broad_phase(
                         if not is_incoming_geom_hibernated:
                             for j in range(n_active_hib):
                                 i_ga = collider_state.active_buffer_hib[j, i_b]
-                                i_gb = collider_state.sort_buffer.i_g[i, i_b]
+                                i_gb = i_g_i
                                 if i_ga > i_gb:
                                     i_ga, i_gb = i_gb, i_ga
 
+                                i_pair = collider_info.collision_pair_idx[i_ga, i_gb]
                                 if not func_check_collision_valid(
                                     i_ga,
                                     i_gb,
                                     i_b,
+                                    i_pair,
                                     links_state,
                                     links_info,
                                     geoms_info,
@@ -349,13 +360,11 @@ def func_broad_phase(
                                     static_rigid_sim_config,
                                     constraint_state,
                                     equalities_info,
-                                    collider_info,
                                 ):
                                     continue
 
                                 if not func_is_geom_aabbs_overlap(geoms_state, i_ga, i_gb, i_b):
                                     # Clear collision normal cache if not in contact
-                                    i_pair = collider_info.collision_pair_idx[i_ga, i_gb]
                                     collider_state.contact_cache.normal[i_pair, i_b] = qd.Vector.zero(gs.qd_float, 3)
                                     continue
 
@@ -364,33 +373,28 @@ def func_broad_phase(
                                 n_broad = n_broad + 1
 
                         if is_incoming_geom_hibernated:
-                            collider_state.active_buffer_hib[n_active_hib, i_b] = collider_state.sort_buffer.i_g[i, i_b]
+                            collider_state.active_buffer_hib[n_active_hib, i_b] = i_g_i
                             n_active_hib = n_active_hib + 1
                         else:
-                            collider_state.active_buffer_awake[n_active_awake, i_b] = collider_state.sort_buffer.i_g[
-                                i, i_b
-                            ]
+                            collider_state.active_buffer_awake[n_active_awake, i_b] = i_g_i
                             n_active_awake = n_active_awake + 1
                     else:
-                        i_g_to_remove = collider_state.sort_buffer.i_g[i, i_b]
+                        # Swap-and-pop removal: SAP only reads the active buffers as sets.
+                        i_g_to_remove = i_g_i
                         if is_incoming_geom_hibernated:
                             for j in range(n_active_hib):
                                 if collider_state.active_buffer_hib[j, i_b] == i_g_to_remove:
-                                    if j < n_active_hib - 1:
-                                        for k in range(j, n_active_hib - 1):
-                                            collider_state.active_buffer_hib[k, i_b] = collider_state.active_buffer_hib[
-                                                k + 1, i_b
-                                            ]
+                                    collider_state.active_buffer_hib[j, i_b] = collider_state.active_buffer_hib[
+                                        n_active_hib - 1, i_b
+                                    ]
                                     n_active_hib = n_active_hib - 1
                                     break
                         else:
                             for j in range(n_active_awake):
                                 if collider_state.active_buffer_awake[j, i_b] == i_g_to_remove:
-                                    if j < n_active_awake - 1:
-                                        for k in range(j, n_active_awake - 1):
-                                            collider_state.active_buffer_awake[k, i_b] = (
-                                                collider_state.active_buffer_awake[k + 1, i_b]
-                                            )
+                                    collider_state.active_buffer_awake[j, i_b] = collider_state.active_buffer_awake[
+                                        n_active_awake - 1, i_b
+                                    ]
                                     n_active_awake = n_active_awake - 1
                                     break
         collider_state.n_broad_pairs[i_b] = n_broad
