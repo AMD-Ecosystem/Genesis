@@ -1762,6 +1762,81 @@ def _func_enqueue_for_multicontact(
 
 
 @qd.kernel(fastcache=gs.use_fastcache)
+def _func_reset_prefilter_queues(
+    collider_state: array_class.ColliderState,
+    n_envs: qd.template(),
+):
+    """Reset pre-filter queue counters to zero."""
+    for i_b in range(n_envs):
+        collider_state.prefilter_queues.capsule_count[i_b] = 0
+        collider_state.prefilter_queues.sphere_count[i_b] = 0
+        collider_state.prefilter_queues.plane_count[i_b] = 0
+        collider_state.prefilter_queues.general_count[i_b] = 0
+
+
+@qd.kernel(fastcache=gs.use_fastcache)
+def _func_prefilter_collision_pairs(
+    geoms_info: array_class.GeomsInfo,
+    collider_state: array_class.ColliderState,
+    n_envs: qd.template(),
+    n_chunks: qd.template(),
+):
+    """Pre-filter broad collision pairs into geometry-specific queues."""
+    _grid_size = n_envs * n_chunks
+    max_broad_pairs = collider_state.broad_collision_pairs.shape[0]
+
+    CAPSULE = gs.GEOM_TYPE.CAPSULE
+    SPHERE = gs.GEOM_TYPE.SPHERE
+    PLANE = gs.GEOM_TYPE.PLANE
+
+    qd.loop_config(block_dim=256)
+    for flat_idx in range(_grid_size):
+        i_b = flat_idx // n_chunks
+        chunk = flat_idx % n_chunks
+        n_pairs = collider_state.n_broad_pairs[i_b]
+        pair_start = chunk * n_pairs // n_chunks
+        pair_end = (chunk + 1) * n_pairs // n_chunks
+
+        for i_pair_local in range(max_broad_pairs):
+            i_pair_idx = pair_start + i_pair_local
+            if i_pair_idx >= pair_end:
+                break
+
+            i_ga = collider_state.broad_collision_pairs[i_pair_idx, i_b][0]
+            i_gb = collider_state.broad_collision_pairs[i_pair_idx, i_b][1]
+
+            type_a = geoms_info.type[i_ga]
+            type_b = geoms_info.type[i_gb]
+
+            if type_a > type_b:
+                type_a, type_b = type_b, type_a
+
+            # Classify pair and add to appropriate per-environment queue
+            # Note: type_a <= type_b guaranteed by sorting above
+            # Store i_ga, i_gb directly to avoid double indirection and reduce VGPR pressure
+            if type_a == CAPSULE and type_b == CAPSULE:
+                idx = qd.atomic_add(collider_state.prefilter_queues.capsule_count[i_b], 1)
+                if idx < collider_state.prefilter_queues.capsule_i_ga.shape[0]:
+                    collider_state.prefilter_queues.capsule_i_ga[idx, i_b] = i_ga
+                    collider_state.prefilter_queues.capsule_i_gb[idx, i_b] = i_gb
+            elif type_a == SPHERE and type_b == CAPSULE:
+                idx = qd.atomic_add(collider_state.prefilter_queues.sphere_count[i_b], 1)
+                if idx < collider_state.prefilter_queues.sphere_i_ga.shape[0]:
+                    collider_state.prefilter_queues.sphere_i_ga[idx, i_b] = i_ga
+                    collider_state.prefilter_queues.sphere_i_gb[idx, i_b] = i_gb
+            elif type_a == PLANE:
+                idx = qd.atomic_add(collider_state.prefilter_queues.plane_count[i_b], 1)
+                if idx < collider_state.prefilter_queues.plane_i_ga.shape[0]:
+                    collider_state.prefilter_queues.plane_i_ga[idx, i_b] = i_ga
+                    collider_state.prefilter_queues.plane_i_gb[idx, i_b] = i_gb
+            else:
+                idx = qd.atomic_add(collider_state.prefilter_queues.general_count[i_b], 1)
+                if idx < collider_state.prefilter_queues.general_i_ga.shape[0]:
+                    collider_state.prefilter_queues.general_i_ga[idx, i_b] = i_ga
+                    collider_state.prefilter_queues.general_i_gb[idx, i_b] = i_gb
+
+
+@qd.kernel(fastcache=gs.use_fastcache)
 def _func_narrowphase_contact0_capsule_capsule(
     geoms_state: array_class.GeomsState,
     geoms_info: array_class.GeomsInfo,
@@ -1783,30 +1858,27 @@ def _func_narrowphase_contact0_capsule_capsule(
 ):
     """Process capsule-capsule contact0 detection."""
     _grid_size = n_envs * n_chunks
-    max_broad_pairs = collider_state.broad_collision_pairs.shape[0]
+    # Cache queue arrays to reduce struct overhead
+    queue_i_ga = collider_state.prefilter_queues.capsule_i_ga
+    queue_i_gb = collider_state.prefilter_queues.capsule_i_gb
+    queue_count = collider_state.prefilter_queues.capsule_count
+    max_queue_size = queue_i_ga.shape[0]
 
     qd.loop_config(block_dim=576)
     for flat_idx in range(_grid_size):
         i_b = flat_idx // n_chunks
         chunk = flat_idx % n_chunks
-        n_pairs = collider_state.n_broad_pairs[i_b]
+        n_pairs = queue_count[i_b]
         pair_start = chunk * n_pairs // n_chunks
         pair_end = (chunk + 1) * n_pairs // n_chunks
 
-        for i_pair_local in range(max_broad_pairs):
-            i_pair_idx = pair_start + i_pair_local
-            if i_pair_idx >= pair_end:
+        for i_queue_local in range(max_queue_size):
+            i_queue_idx = pair_start + i_queue_local
+            if i_queue_idx >= pair_end:
                 break
 
-            i_ga = collider_state.broad_collision_pairs[i_pair_idx, i_b][0]
-            i_gb = collider_state.broad_collision_pairs[i_pair_idx, i_b][1]
-
-            if geoms_info.type[i_ga] > geoms_info.type[i_gb]:
-                i_ga, i_gb = i_gb, i_ga
-
-            # FILTER: Only process capsule-capsule pairs
-            if not (geoms_info.type[i_ga] == gs.GEOM_TYPE.CAPSULE and geoms_info.type[i_gb] == gs.GEOM_TYPE.CAPSULE):
-                continue
+            i_ga = queue_i_ga[i_queue_idx, i_b]
+            i_gb = queue_i_gb[i_queue_idx, i_b]
 
             EPS = rigid_global_info.EPS[None]
 
@@ -1910,33 +1982,27 @@ def _func_narrowphase_contact0_sphere_capsule(
 ):
     """Process sphere-capsule contact0 detection."""
     _grid_size = n_envs * n_chunks
-    max_broad_pairs = collider_state.broad_collision_pairs.shape[0]
+    # Cache queue arrays to reduce struct overhead
+    queue_i_ga = collider_state.prefilter_queues.sphere_i_ga
+    queue_i_gb = collider_state.prefilter_queues.sphere_i_gb
+    queue_count = collider_state.prefilter_queues.sphere_count
+    max_queue_size = queue_i_ga.shape[0]
 
     qd.loop_config(block_dim=448)
     for flat_idx in range(_grid_size):
         i_b = flat_idx // n_chunks
         chunk = flat_idx % n_chunks
-        n_pairs = collider_state.n_broad_pairs[i_b]
+        n_pairs = queue_count[i_b]
         pair_start = chunk * n_pairs // n_chunks
         pair_end = (chunk + 1) * n_pairs // n_chunks
 
-        for i_pair_local in range(max_broad_pairs):
-            i_pair_idx = pair_start + i_pair_local
-            if i_pair_idx >= pair_end:
+        for i_queue_local in range(max_queue_size):
+            i_queue_idx = pair_start + i_queue_local
+            if i_queue_idx >= pair_end:
                 break
 
-            i_ga = collider_state.broad_collision_pairs[i_pair_idx, i_b][0]
-            i_gb = collider_state.broad_collision_pairs[i_pair_idx, i_b][1]
-
-            if geoms_info.type[i_ga] > geoms_info.type[i_gb]:
-                i_ga, i_gb = i_gb, i_ga
-
-            # FILTER: Only process sphere-capsule pairs
-            if not (
-                (geoms_info.type[i_ga] == gs.GEOM_TYPE.SPHERE and geoms_info.type[i_gb] == gs.GEOM_TYPE.CAPSULE)
-                or (geoms_info.type[i_ga] == gs.GEOM_TYPE.CAPSULE and geoms_info.type[i_gb] == gs.GEOM_TYPE.SPHERE)
-            ):
-                continue
+            i_ga = queue_i_ga[i_queue_idx, i_b]
+            i_gb = queue_i_gb[i_queue_idx, i_b]
 
             multi_contact = False
 
@@ -2041,30 +2107,27 @@ def _func_narrowphase_contact0_plane(
     n_chunks: qd.template(),
 ):
     _grid_size = n_envs * n_chunks
-    max_broad_pairs = collider_state.broad_collision_pairs.shape[0]
+    # Cache queue arrays to reduce struct overhead
+    queue_i_ga = collider_state.prefilter_queues.plane_i_ga
+    queue_i_gb = collider_state.prefilter_queues.plane_i_gb
+    queue_count = collider_state.prefilter_queues.plane_count
+    max_queue_size = queue_i_ga.shape[0]
 
     qd.loop_config(block_dim=128)
     for flat_idx in range(_grid_size):
         i_b = flat_idx // n_chunks
         chunk = flat_idx % n_chunks
-        n_pairs = collider_state.n_broad_pairs[i_b]
+        n_pairs = queue_count[i_b]
         pair_start = chunk * n_pairs // n_chunks
         pair_end = (chunk + 1) * n_pairs // n_chunks
 
-        for i_pair_local in range(max_broad_pairs):
-            i_pair_idx = pair_start + i_pair_local
-            if i_pair_idx >= pair_end:
+        for i_queue_local in range(max_queue_size):
+            i_queue_idx = pair_start + i_queue_local
+            if i_queue_idx >= pair_end:
                 break
 
-            i_ga = collider_state.broad_collision_pairs[i_pair_idx, i_b][0]
-            i_gb = collider_state.broad_collision_pairs[i_pair_idx, i_b][1]
-
-            if geoms_info.type[i_ga] > geoms_info.type[i_gb]:
-                i_ga, i_gb = i_gb, i_ga
-
-            # FILTER: Only process plane pairs
-            if not (geoms_info.type[i_ga] == gs.GEOM_TYPE.PLANE):
-                continue
+            i_ga = queue_i_ga[i_queue_idx, i_b]
+            i_gb = queue_i_gb[i_queue_idx, i_b]
 
             EPS = rigid_global_info.EPS[None]
 
@@ -2184,35 +2247,27 @@ def _func_narrowphase_contact0_general(
     n_chunks: qd.template(),
 ):
     _grid_size = n_envs * n_chunks
-    max_broad_pairs = collider_state.broad_collision_pairs.shape[0]
+    # Cache queue arrays to reduce struct overhead in loop
+    queue_i_ga = collider_state.prefilter_queues.general_i_ga
+    queue_i_gb = collider_state.prefilter_queues.general_i_gb
+    queue_count = collider_state.prefilter_queues.general_count
+    max_queue_size = queue_i_ga.shape[0]
 
     qd.loop_config(block_dim=128)
     for flat_idx in range(_grid_size):
         i_b = flat_idx // n_chunks
         chunk = flat_idx % n_chunks
-        n_pairs = collider_state.n_broad_pairs[i_b]
+        n_pairs = queue_count[i_b]
         pair_start = chunk * n_pairs // n_chunks
         pair_end = (chunk + 1) * n_pairs // n_chunks
 
-        for i_pair_local in range(max_broad_pairs):
-            i_pair_idx = pair_start + i_pair_local
-            if i_pair_idx >= pair_end:
+        for i_queue_local in range(max_queue_size):
+            i_queue_idx = pair_start + i_queue_local
+            if i_queue_idx >= pair_end:
                 break
 
-            i_ga = collider_state.broad_collision_pairs[i_pair_idx, i_b][0]
-            i_gb = collider_state.broad_collision_pairs[i_pair_idx, i_b][1]
-
-            if geoms_info.type[i_ga] > geoms_info.type[i_gb]:
-                i_ga, i_gb = i_gb, i_ga
-
-            # FILTER: Only process general geometry pairs (not capsule-capsule, sphere-capsule, or plane)
-            if (
-                (geoms_info.type[i_ga] == gs.GEOM_TYPE.CAPSULE and geoms_info.type[i_gb] == gs.GEOM_TYPE.CAPSULE)
-                or (geoms_info.type[i_ga] == gs.GEOM_TYPE.SPHERE and geoms_info.type[i_gb] == gs.GEOM_TYPE.CAPSULE)
-                or (geoms_info.type[i_ga] == gs.GEOM_TYPE.CAPSULE and geoms_info.type[i_gb] == gs.GEOM_TYPE.SPHERE)
-                or (geoms_info.type[i_ga] == gs.GEOM_TYPE.PLANE)
-            ):
-                continue
+            i_ga = queue_i_ga[i_queue_idx, i_b]
+            i_gb = queue_i_gb[i_queue_idx, i_b]
 
             if not (
                 geoms_info.is_convex[i_ga]

@@ -505,15 +505,11 @@ def func_gjk(
     dist = gs.qd_float(0.0)
     # Lambda for barycentric coordinates
     _lambda = gs.qd_vec4(1.0, 0.0, 0.0, 0.0)
-    # Whether or not we need to compute the exact distance.
-    get_dist = shrink_sphere
-    # We can use GJK intersection algorithm only for collision detection if we do not have to compute the distance.
-    backup_gjk = not get_dist
+    # Combine boolean flags into single int bitfield: bit0=get_dist, bit1=backup_gjk, bit2=early_stop
+    flags = gs.qd_int(shrink_sphere | ((not shrink_sphere) << 1))
     # Support vector to compute the next support point.
     support_vector = gs.qd_vec3(0.0, 0.0, 0.0)
     support_vector_norm = gs.qd_float(0.0)
-    # Whether or not the main loop finished early because intersection or seperation was detected.
-    early_stop = False
 
     # Set initial guess of support vector using the thread-local positions, which should be a non-zero vector.
     approx_witness_point_obj1 = pos_a
@@ -525,8 +521,6 @@ def func_gjk(
     # Epsilon for convergence check.
     epsilon = gs.qd_float(0.0)
     if not func_is_discrete_geoms(geoms_info, i_ga, i_gb):
-        # If the objects are smooth, finite convergence is not guaranteed, so we need to set some epsilon
-        # to determine convergence.
         epsilon = 0.5 * (gjk_info.tolerance[None] ** 2)
 
     for i in range(gjk_info.gjk_max_iterations[None]):
@@ -536,9 +530,11 @@ def func_gjk(
             # If the support vector is too small, it means that origin is located in the Minkowski difference
             # with high probability, so we can stop.
             break
-
+        inv_norm = 1.0 / support_vector_norm
+        dir = -support_vector
+        dir = dir * inv_norm
         # Dir to compute the support point (pointing from obj1 to obj2)
-        dir = -support_vector * (1.0 / support_vector_norm)
+        # dir = -support_vector * (1.0 / support_vector_norm)
 
         (
             gjk_state.simplex_vertex.obj1[i_b, n],
@@ -568,32 +564,23 @@ def func_gjk(
             shrink_sphere,
         )
 
-        # Early stopping based on Frank-Wolfe duality gap. We need to find the minimum [support_vector_norm],
-        # and if we denote it as [x], the problem formulation is: min_x |x|^2.
-        # If we denote f(x) = |x|^2, then the Frank-Wolfe duality gap is:
-        # |x - x_min|^2 <= < grad f(x), x - s> = < 2x, x - s >,
-        # where s is the vertex of the Minkowski difference found by x. Here < 2x, x - s > is guaranteed to be
-        # non-negative, and 2 is cancelled out in the definition of the epsilon.
-        x_k = support_vector
-        s_k = gjk_state.simplex_vertex.mink[i_b, n]
-        diff = x_k - s_k
-        if diff.dot(x_k) < epsilon:
+        # Early stopping based on Frank-Wolfe duality gap - compute dot product inline without temp vector
+        if (support_vector - gjk_state.simplex_vertex.mink[i_b, n]).dot(support_vector) < epsilon:
             # Convergence condition is met, we can stop.
             if i == 0:
                 n = 1
             break
 
         # Check if the objects are separated using support vector
-        if not get_dist:
-            is_separated = x_k.dot(s_k) > 0.0
-            if is_separated:
+        if (flags & 1) == 0:  # get_dist bit
+            if support_vector.dot(gjk_state.simplex_vertex.mink[i_b, n]) > 0.0:
                 nsimplex = 0
                 nx = 0
                 dist = gjk_info.FLOAT_MAX[None]
-                early_stop = True
+                flags |= 4  # Set early_stop bit
                 break
 
-        if n == 3 and backup_gjk:
+        if n == 3 and (flags & 2):  # backup_gjk bit
             # Tetrahedron is generated, try to detect collision if possible.
             intersect_code = func_gjk_intersect(
                 geoms_info=geoms_info,
@@ -613,22 +600,20 @@ def func_gjk(
                 quat_b=quat_b,
             )
             if intersect_code == GJK_RETURN_CODE.SEPARATED:
-                # No intersection, objects are separated
                 nx = 0
                 dist = gjk_info.FLOAT_MAX[None]
                 nsimplex = 0
-                early_stop = True
+                flags |= 4  # Set early_stop bit
                 break
             elif intersect_code == GJK_RETURN_CODE.INTERSECT:
-                # Intersection found
                 nx = 0
                 dist = 0.0
                 nsimplex = 4
-                early_stop = True
+                flags |= 4  # Set early_stop bit
                 break
             else:
-                # Since gjk_intersect failed (e.g. origin is on the simplex face), fallback to distance computation
-                backup_gjk = False
+                # Since gjk_intersect failed, fallback to distance computation
+                flags &= ~2  # Clear backup_gjk bit
 
         # Compute the barycentric coordinates of the closest point to the origin in the simplex
         _lambda = func_gjk_subdistance(gjk_state, gjk_info, i_b, n + 1)
@@ -650,7 +635,7 @@ def func_gjk(
             nsimplex = 0
             nx = 0
             dist = gjk_info.FLOAT_MAX[None]
-            early_stop = True
+            flags |= 4  # Set early_stop bit
             break
 
         # Get the next support vector
@@ -669,7 +654,7 @@ def func_gjk(
             support_vector_norm = 0
             break
 
-    if not early_stop:
+    if (flags & 4) == 0:  # Check early_stop bit
         # If [get_dist] was True and there was no numerical error, [return_code] would be SUCCESS.
         nx = 1
         nsimplex = n
@@ -953,23 +938,12 @@ def func_gjk_subdistance_3d(
     flag = RETURN_CODE.FAIL
     _lambda = gs.qd_vec4(0, 0, 0, 0)
 
-    # Simplex vertices
-    s1 = gjk_state.simplex_vertex.mink[i_b, i_s1]
-    s2 = gjk_state.simplex_vertex.mink[i_b, i_s2]
-    s3 = gjk_state.simplex_vertex.mink[i_b, i_s3]
-    s4 = gjk_state.simplex_vertex.mink[i_b, i_s4]
-
-    # Compute the cofactors to find det(M), which corresponds to the signed volume of the tetrahedron
+    # Compute cofactors directly without caching vertices - reduces 4 vec3 temporaries
     Cs = qd.math.vec4(0.0, 0.0, 0.0, 0.0)
-    for i in range(4):
-        v1, v2, v3 = s2, s3, s4
-        if i == 1:
-            v1, v2, v3 = s1, s3, s4
-        elif i == 2:
-            v1, v2, v3 = s1, s2, s4
-        elif i == 3:
-            v1, v2, v3 = s1, s2, s3
-        Cs[i] = func_det3(v1, v2, v3)
+    Cs[0] = func_det3(gjk_state.simplex_vertex.mink[i_b, i_s2], gjk_state.simplex_vertex.mink[i_b, i_s3], gjk_state.simplex_vertex.mink[i_b, i_s4])
+    Cs[1] = func_det3(gjk_state.simplex_vertex.mink[i_b, i_s1], gjk_state.simplex_vertex.mink[i_b, i_s3], gjk_state.simplex_vertex.mink[i_b, i_s4])
+    Cs[2] = func_det3(gjk_state.simplex_vertex.mink[i_b, i_s1], gjk_state.simplex_vertex.mink[i_b, i_s2], gjk_state.simplex_vertex.mink[i_b, i_s4])
+    Cs[3] = func_det3(gjk_state.simplex_vertex.mink[i_b, i_s1], gjk_state.simplex_vertex.mink[i_b, i_s2], gjk_state.simplex_vertex.mink[i_b, i_s3])
     Cs[0], Cs[2] = -Cs[0], -Cs[2]
     m_det = Cs.sum()
 
@@ -1010,21 +984,15 @@ def func_gjk_subdistance_2d(
     )
 
     if proj_flag == RETURN_CODE.SUCCESS:
-        # We should find the barycentric coordinates of the projected point, but the linear system is not square:
-        # [ s1.x, s2.x, s3.x ] [ l1 ] = [ proj_o.x ]
-        # [ s1.y, s2.y, s3.y ] [ l2 ] = [ proj_o.y ]
-        # [ s1.z, s2.z, s3.z ] [ l3 ] = [ proj_o.z ]
-        # [ 1,    1,    1,   ] [ ?  ] = [ 1.0 ]
-        # So we remove one row before solving the system. We exclude the axis with the largest projection of the
-        # simplex using the minors of the above linear system.
-        s1 = gjk_state.simplex_vertex.mink[i_b, i_s1]
-        s2 = gjk_state.simplex_vertex.mink[i_b, i_s2]
-        s3 = gjk_state.simplex_vertex.mink[i_b, i_s3]
+        # Compute ms components directly accessing array instead of caching s1,s2,s3
+        s1_v = gjk_state.simplex_vertex.mink[i_b, i_s1]
+        s2_v = gjk_state.simplex_vertex.mink[i_b, i_s2]
+        s3_v = gjk_state.simplex_vertex.mink[i_b, i_s3]
 
         ms = gs.qd_vec3(
-            s2[1] * s3[2] - s2[2] * s3[1] - s1[1] * s3[2] + s1[2] * s3[1] + s1[1] * s2[2] - s1[2] * s2[1],
-            s2[0] * s3[2] - s2[2] * s3[0] - s1[0] * s3[2] + s1[2] * s3[0] + s1[0] * s2[2] - s1[2] * s2[0],
-            s2[0] * s3[1] - s2[1] * s3[0] - s1[0] * s3[1] + s1[1] * s3[0] + s1[0] * s2[1] - s1[1] * s2[0],
+            s2_v[1] * s3_v[2] - s2_v[2] * s3_v[1] - s1_v[1] * s3_v[2] + s1_v[2] * s3_v[1] + s1_v[1] * s2_v[2] - s1_v[2] * s2_v[1],
+            s2_v[0] * s3_v[2] - s2_v[2] * s3_v[0] - s1_v[0] * s3_v[2] + s1_v[2] * s3_v[0] + s1_v[0] * s2_v[2] - s1_v[2] * s2_v[0],
+            s2_v[0] * s3_v[1] - s2_v[1] * s3_v[0] - s1_v[0] * s3_v[1] + s1_v[1] * s3_v[0] + s1_v[0] * s2_v[1] - s1_v[1] * s2_v[0],
         )
         absms = qd.abs(ms)
 
@@ -1041,9 +1009,9 @@ def func_gjk_subdistance_2d(
                 if i == 1:
                     i0, i1 = i1, i0
 
-                s1_2d[0], s1_2d[1] = s1[i0], s1[i1]
-                s2_2d[0], s2_2d[1] = s2[i0], s2[i1]
-                s3_2d[0], s3_2d[1] = s3[i0], s3[i1]
+                s1_2d[0], s1_2d[1] = s1_v[i0], s1_v[i1]
+                s2_2d[0], s2_2d[1] = s2_v[i0], s2_v[i1]
+                s3_2d[0], s3_2d[1] = s3_v[i0], s3_v[i1]
                 proj_orig_2d[0] = proj_orig[i0]
                 proj_orig_2d[1] = proj_orig[i1]
                 break
@@ -1095,20 +1063,21 @@ def func_gjk_subdistance_1d(
     """
     _lambda = gs.qd_vec4(0, 0, 0, 0)
 
-    s1 = gjk_state.simplex_vertex.mink[i_b, i_s1]
-    s2 = gjk_state.simplex_vertex.mink[i_b, i_s2]
-    p_o = func_project_origin_to_line(s1, s2)
+    # Access directly in func_project_origin_to_line call to avoid caching
+    p_o = func_project_origin_to_line(gjk_state.simplex_vertex.mink[i_b, i_s1], gjk_state.simplex_vertex.mink[i_b, i_s2])
 
     mu_max = 0.0
     index = -1
+    s1_v = gjk_state.simplex_vertex.mink[i_b, i_s1]
+    s2_v = gjk_state.simplex_vertex.mink[i_b, i_s2]
     for i in range(3):
-        mu = s1[i] - s2[i]
+        mu = s1_v[i] - s2_v[i]
         if qd.abs(mu) >= qd.abs(mu_max):
             mu_max = mu
             index = i
 
-    C1 = p_o[index] - s2[index]
-    C2 = s1[index] - p_o[index]
+    C1 = p_o[index] - s2_v[index]
+    C2 = s1_v[index] - p_o[index]
 
     # Determine if projection of origin lies inside 1-simplex
     if func_compare_sign(mu_max, C1) and func_compare_sign(mu_max, C2):

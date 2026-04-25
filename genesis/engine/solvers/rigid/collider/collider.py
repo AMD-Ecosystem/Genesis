@@ -681,6 +681,18 @@ class Collider:
             narrowphase._func_reset_narrowphase_work_queues(
                 self._collider_state,
             )
+            # Reset pre-filter queue counters
+            narrowphase._func_reset_prefilter_queues(
+                self._collider_state,
+                self._solver._B,
+            )
+            # Pre-filter collision pairs into geometry-specific queues
+            narrowphase._func_prefilter_collision_pairs(
+                self._solver.geoms_info,
+                self._collider_state,
+                self._solver._B,
+                self._contact0_n_chunks,
+            )
             # Split kernel calls: capsule-capsule
             narrowphase._func_narrowphase_contact0_capsule_capsule(
                 self._solver.geoms_state,
