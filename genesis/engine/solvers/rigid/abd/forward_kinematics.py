@@ -1454,6 +1454,7 @@ def func_forward_velocity_entity(
                             links_state.cd_ang_bw[next_I] = links_state.cd_ang_bw[curr_I]
 
                         for i_3 in qd.static(range(3)):
+                            idx = dof_start + i_3 + 3
                             v = dofs_state.vel[idx, i_b]
                             cvel_vel = cvel_vel + dofs_state.cdof_vel[idx, i_b] * v
                             cvel_ang = cvel_ang + dofs_state.cdof_ang[idx, i_b] * v
