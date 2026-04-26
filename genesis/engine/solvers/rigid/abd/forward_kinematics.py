@@ -1386,7 +1386,7 @@ def func_forward_velocity_entity(
     R = qd.static(func_read_field_if)
     A = qd.static(func_atomic_add_if)
     i_b = qd.cast(i_b, qd.i32)
-
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL,block_dim=64)
     for i_l_ in (
         range(entities_info.link_start[i_e], entities_info.link_end[i_e])
         if qd.static(not BW)
