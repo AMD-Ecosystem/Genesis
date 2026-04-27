@@ -1386,15 +1386,17 @@ def func_forward_velocity_entity(
     R = qd.static(func_read_field_if)
     A = qd.static(func_atomic_add_if)
     i_b = qd.cast(i_b, qd.i32)
+    link_start = entities_info.link_start[i_e]
+    link_end = entities_info.link_end[i_e]
     qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL,block_dim=64)
     for i_l_ in (
-        range(entities_info.link_start[i_e], entities_info.link_end[i_e])
+        range(link_start, link_end)
         if qd.static(not BW)
         else qd.static(range(static_rigid_sim_config.max_n_links_per_entity))
     ):
-        i_l = gs.qd_int(i_l_ if qd.static(not BW) else (i_l_ + entities_info.link_start[i_e]))
+        i_l = gs.qd_int(i_l_ if qd.static(not BW) else (i_l_ + link_start))
 
-        if func_check_index_range(i_l, entities_info.link_start[i_e], entities_info.link_end[i_e], BW):
+        if func_check_index_range(i_l, link_start, link_end, BW):
             I_l = [i_l, i_b] if qd.static(static_rigid_sim_config.batch_links_info) else i_l
             n_joints = links_info.joint_end[I_l] - links_info.joint_start[I_l]
 
