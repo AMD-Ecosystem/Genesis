@@ -30,7 +30,6 @@ from .broadphase import (
     func_check_collision_valid,
     func_collision_clear,
     func_broad_phase,
-    func_broad_phase_lds,
 )
 
 from .contact import (
