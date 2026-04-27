@@ -624,6 +624,20 @@ def get_narrowphase_work_queues(max_entries):
 
 
 @DATA_ORIENTED
+class StructSortedCollisionState(metaclass=BASE_METACLASS):
+    """State for pre-sorted collision pairs to reduce branch divergence."""
+    # Sorted collision pairs grouped by geometry type (max_pairs, n_envs, 2)
+    sorted_pairs: V_ANNOTATION
+    # Bucket metadata: counts and offsets for each geometry type bucket (n_envs, 7)
+    bucket_counts: V_ANNOTATION
+    bucket_offsets: V_ANNOTATION
+    # Mapping from original pair index to bucket (max_pairs, n_envs)
+    pair_to_bucket: V_ANNOTATION
+    # Original pair indices for reverse mapping (max_pairs, n_envs)
+    original_indices: V_ANNOTATION
+
+
+@DATA_ORIENTED
 class StructColliderState(metaclass=BASE_METACLASS):
     sort_buffer: StructSortBuffer
     contact_data: StructContactData
@@ -2108,6 +2122,23 @@ def get_viewer_raycast_result():
     )
 
 
+def get_sorted_collision_state(solver, max_collision_pairs):
+    """Create state structure for sorted collision pairs to reduce branch divergence."""
+    _B = solver._B
+
+    return StructSortedCollisionState(
+        # Sorted collision pairs (pair_idx, env_idx, [i_ga, i_gb])
+        sorted_pairs=V(dtype=gs.qd_int, shape=(max_collision_pairs, _B, 2)),
+        # Bucket metadata: 7 buckets for different geometry type combinations
+        bucket_counts=V(dtype=gs.qd_int, shape=(_B, 7)),
+        bucket_offsets=V(dtype=gs.qd_int, shape=(_B, 7)),
+        # Mapping from original pair index to bucket
+        pair_to_bucket=V(dtype=gs.qd_int, shape=(max_collision_pairs, _B)),
+        # Original indices for reverse mapping
+        original_indices=V(dtype=gs.qd_int, shape=(max_collision_pairs, _B)),
+    )
+
+
 DofsState = StructDofsState if gs.use_ndarray else qd.template()
 DofsInfo = StructDofsInfo if gs.use_ndarray else qd.template()
 GeomsState = StructGeomsState if gs.use_ndarray else qd.template()
@@ -2131,6 +2162,7 @@ EqualitiesInfo = StructEqualitiesInfo if gs.use_ndarray else qd.template()
 RigidGlobalInfo = StructRigidGlobalInfo if gs.use_ndarray else qd.template()
 ColliderState = StructColliderState if gs.use_ndarray else qd.template()
 ColliderInfo = StructColliderInfo if gs.use_ndarray else qd.template()
+SortedCollisionState = StructSortedCollisionState if gs.use_ndarray else qd.template()
 MPRState = StructMPRState if gs.use_ndarray else qd.template()
 MPRInfo = StructMPRInfo if gs.use_ndarray else qd.template()
 SupportFieldInfo = StructSupportFieldInfo if gs.use_ndarray else qd.template()

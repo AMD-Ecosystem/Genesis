@@ -23,6 +23,7 @@ from genesis.utils.sdf import SDF
 from . import mpr
 from . import gjk
 from . import support_field
+from .narrowphase import CCD_ALGORITHM_CODE
 
 # Import and re-export from submodules for backward compatibility
 from .broadphase import (
@@ -199,6 +200,15 @@ class Collider:
             self._collider_info,
             self._collider_static_config,
         )
+
+        # Initialize sorted collision state for branch divergence optimization
+        self._sorted_collision_state = array_class.get_sorted_collision_state(
+            self._solver, n_possible_pairs_
+        )
+
+        # Enable branch divergence optimization for CUDA devices by default
+        # Note: Temporarily disabled due to Quadrants compilation issues
+        self._enable_branch_divergence_optimization = False
 
         # 'contact_data_cache' is not used in Quadrants kernels, so keep it outside of the collider state / info
         self._contact_data_cache: dict[tuple[bool, bool], dict[str, torch.Tensor | tuple[torch.Tensor]]] = {}
@@ -681,25 +691,51 @@ class Collider:
             narrowphase._func_reset_narrowphase_work_queues(
                 self._collider_state,
             )
-            narrowphase._func_narrowphase_contact0(
-                self._solver.geoms_state,
-                self._solver.geoms_info,
-                self._solver.geoms_init_AABB,
-                self._solver.verts_info,
-                self._solver._rigid_global_info,
-                self._solver._static_rigid_sim_config,
-                self._collider_state,
-                self._collider_info,
-                self._collider_static_config,
-                self._contact0_mpr_state,
-                self._mpr._mpr_info,
-                self._contact0_gjk_state,
-                self._gjk._gjk_info,
-                self._support_field._support_field_info,
-                self._solver._errno,
-                self._solver._B,
-                self._contact0_n_chunks,
-            )
+
+            # Use optimized branch divergence mitigation if enabled
+            if self._enable_branch_divergence_optimization:
+                narrowphase.func_narrowphase_contact0_optimized(
+                    self._solver.geoms_state,
+                    self._solver.geoms_info,
+                    self._solver.geoms_init_AABB,
+                    self._solver.verts_info,
+                    self._solver._rigid_global_info,
+                    self._solver._static_rigid_sim_config,
+                    self._collider_state,
+                    self._collider_info,
+                    self._collider_static_config,
+                    self._contact0_mpr_state,
+                    self._mpr._mpr_info,
+                    self._contact0_gjk_state,
+                    self._gjk._gjk_info,
+                    self._support_field._support_field_info,
+                    self._sorted_collision_state,
+                    self._solver._errno,
+                    True,  # enable_bucket_sorting (Python boolean)
+                    self._solver._B,
+                    self._contact0_n_chunks,
+                )
+            else:
+                # Fallback to original kernel
+                narrowphase._func_narrowphase_contact0(
+                    self._solver.geoms_state,
+                    self._solver.geoms_info,
+                    self._solver.geoms_init_AABB,
+                    self._solver.verts_info,
+                    self._solver._rigid_global_info,
+                    self._solver._static_rigid_sim_config,
+                    self._collider_state,
+                    self._collider_info,
+                    self._collider_static_config,
+                    self._contact0_mpr_state,
+                    self._mpr._mpr_info,
+                    self._contact0_gjk_state,
+                    self._gjk._gjk_info,
+                    self._support_field._support_field_info,
+                    self._solver._errno,
+                    self._solver._B,
+                    self._contact0_n_chunks,
+                )
             self._call_multicontact()
             narrowphase._func_prepare_gjk_rerun(self._collider_state)
             self._call_multicontact()
@@ -883,6 +919,31 @@ class Collider:
         )
 
         return contact_data.copy()
+
+    def set_branch_divergence_optimization(self, enabled: bool):
+        """Enable or disable branch divergence optimization for narrowphase collision detection.
+
+        Args:
+            enabled: If True, uses optimized kernel splitting approach for better SIMD efficiency.
+                    If False, falls back to original monolithic kernel.
+
+        Note:
+            This optimization is most effective on CUDA devices and when convex-convex
+            collision detection is enabled. It reduces branch divergence by sorting
+            collision pairs by geometry type and using specialized kernels.
+        """
+        if enabled and gs.device.type != "cuda":
+            gs.warn("Branch divergence optimization is most effective on CUDA devices")
+
+        if enabled and not self._collider_static_config.has_non_box_plane_convex_convex:
+            gs.warn("Branch divergence optimization requires convex-convex collision detection")
+
+        self._enable_branch_divergence_optimization = enabled
+        gs.info(f"Branch divergence optimization {'enabled' if enabled else 'disabled'}")
+
+    def get_branch_divergence_optimization_status(self) -> bool:
+        """Get the current status of branch divergence optimization."""
+        return self._enable_branch_divergence_optimization
 
     def backward(self, dL_dposition, dL_dnormal, dL_dpenetration):
         func_set_upstream_grad(dL_dposition, dL_dnormal, dL_dpenetration, self._collider_state)

@@ -46,6 +46,112 @@ class CCD_ALGORITHM_CODE(IntEnum):
 
 
 @qd.func
+def classify_collision_pair(i_ga: int, i_gb: int, geoms_info) -> int:
+    """Classify collision pairs into execution buckets for optimal SIMD efficiency.
+
+    Returns:
+        0: Sphere-Sphere (fastest analytical)
+        1: Sphere-Capsule
+        2: Capsule-Capsule
+        3: Plane-* (support point method)
+        4: Box-Box (specialized SAT)
+        5: Terrain contacts
+        6: General convex-convex (GJK/MPR)
+    """
+    # Ensure consistent ordering (smaller type first)
+    type_a = geoms_info.type[i_ga]
+    type_b = geoms_info.type[i_gb]
+    if type_a > type_b:
+        type_a, type_b = type_b, type_a
+
+    # Fast analytical paths (bucket 0-2)
+    if type_a == gs.GEOM_TYPE.SPHERE and type_b == gs.GEOM_TYPE.SPHERE:
+        return 0  # Sphere-Sphere (fastest)
+    elif type_a == gs.GEOM_TYPE.SPHERE and type_b == gs.GEOM_TYPE.CAPSULE:
+        return 1  # Sphere-Capsule
+    elif type_a == gs.GEOM_TYPE.CAPSULE and type_b == gs.GEOM_TYPE.CAPSULE:
+        return 2  # Capsule-Capsule
+
+    # Semi-analytical paths (bucket 3-4)
+    elif type_a == gs.GEOM_TYPE.PLANE:
+        return 3  # Plane-* (support point method)
+    elif type_a == gs.GEOM_TYPE.BOX and type_b == gs.GEOM_TYPE.BOX:
+        return 4  # Box-Box (specialized SAT)
+
+    # Iterative paths (bucket 5-6)
+    elif type_b == gs.GEOM_TYPE.TERRAIN:
+        return 5  # Terrain contacts
+    else:
+        return 6  # General convex-convex (GJK/MPR)
+
+
+@qd.kernel(fastcache=gs.use_fastcache)
+def _func_sort_collision_pairs_by_type(
+    geoms_info: array_class.GeomsInfo,
+    collider_state: array_class.ColliderState,
+    sorted_collision_state: array_class.SortedCollisionState,
+    n_envs: qd.template(),
+):
+    """Sort collision pairs by geometry type combination for SIMD efficiency."""
+
+    for i_b in range(n_envs):
+        n_pairs = collider_state.n_broad_pairs[i_b]
+
+        # Initialize bucket counters
+        for bucket_id in range(7):
+            sorted_collision_state.bucket_counts[i_b, bucket_id] = 0
+
+        # Count pairs in each bucket (first pass)
+        for i_pair in range(n_pairs):
+            i_ga = collider_state.broad_collision_pairs[i_pair, i_b][0]
+            i_gb = collider_state.broad_collision_pairs[i_pair, i_b][1]
+
+            bucket_id = classify_collision_pair(i_ga, i_gb, geoms_info)
+            sorted_collision_state.bucket_counts[i_b, bucket_id] += 1
+
+        # Compute bucket offsets (prefix sum)
+        sorted_collision_state.bucket_offsets[i_b, 0] = 0
+        for i in range(1, 7):
+            sorted_collision_state.bucket_offsets[i_b, i] = (
+                sorted_collision_state.bucket_offsets[i_b, i-1] +
+                sorted_collision_state.bucket_counts[i_b, i-1]
+            )
+
+        # Reset counters for actual sorting using write indices
+        write_indices = qd.Vector.zero(gs.qd_int, 7)
+        for i in range(7):
+            write_indices[i] = sorted_collision_state.bucket_offsets[i_b, i]
+
+        # Sort pairs into buckets (second pass)
+        for i_pair in range(n_pairs):
+            i_ga = collider_state.broad_collision_pairs[i_pair, i_b][0]
+            i_gb = collider_state.broad_collision_pairs[i_pair, i_b][1]
+
+            bucket_id = classify_collision_pair(i_ga, i_gb, geoms_info)
+            write_idx = write_indices[bucket_id]
+            write_indices[bucket_id] += 1
+
+            # Write to sorted array
+            sorted_collision_state.sorted_pairs[write_idx, i_b, 0] = i_ga
+            sorted_collision_state.sorted_pairs[write_idx, i_b, 1] = i_gb
+            sorted_collision_state.pair_to_bucket[i_pair, i_b] = bucket_id
+            sorted_collision_state.original_indices[write_idx, i_b] = i_pair
+
+
+@qd.func
+def find_original_pair_index(i_ga: int, i_gb: int, collider_state: array_class.ColliderState, i_b: int) -> int:
+    """Find original pair index for contact storage given geometry indices."""
+    # Linear search through broad pairs (could be optimized with hash table)
+    n_pairs = collider_state.n_broad_pairs[i_b]
+    for i_pair in range(n_pairs):
+        pair_ga = collider_state.broad_collision_pairs[i_pair, i_b][0]
+        pair_gb = collider_state.broad_collision_pairs[i_pair, i_b][1]
+        if (pair_ga == i_ga and pair_gb == i_gb) or (pair_ga == i_gb and pair_gb == i_ga):
+            return i_pair
+    return -1  # Should never happen if called correctly
+
+
+@qd.func
 def func_contact_sphere_sdf(
     i_ga,
     i_gb,
@@ -2506,3 +2612,399 @@ def func_narrow_phase_nonconvex_vs_nonterrain(
                                     collider_info,
                                     errno,
                                 )
+
+
+# ========================================== BRANCH DIVERGENCE OPTIMIZATION ==========================================
+
+
+@qd.kernel(fastcache=gs.use_fastcache)
+def _func_narrowphase_analytical_fast(
+    geoms_state: array_class.GeomsState,
+    geoms_info: array_class.GeomsInfo,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    collider_state: array_class.ColliderState,
+    collider_info: array_class.ColliderInfo,
+    sorted_collision_state: array_class.SortedCollisionState,
+    errno: array_class.V_ANNOTATION,
+    bucket_id: qd.template(),  # 0=Sphere-Sphere, 1=Sphere-Capsule, 2=Capsule-Capsule
+    n_envs: qd.template(),
+):
+    """Specialized kernel for analytical collision detection (Sphere/Capsule pairs).
+
+    Reduced register pressure - only analytical code paths for optimal SIMD efficiency.
+    """
+
+    for i_b in range(n_envs):
+        bucket_start = sorted_collision_state.bucket_offsets[i_b, bucket_id]
+        bucket_size = sorted_collision_state.bucket_counts[i_b, bucket_id]
+
+        # Process bucket in SIMD-friendly chunks
+        for chunk_start in range(0, bucket_size, 64):  # 64 = wavefront size
+            chunk_end = qd.min(chunk_start + 64, bucket_size)
+
+            # All threads in wavefront execute same algorithm
+            for local_idx in range(chunk_end - chunk_start):
+                pair_idx = bucket_start + chunk_start + local_idx
+                i_ga = sorted_collision_state.sorted_pairs[pair_idx, i_b, 0]
+                i_gb = sorted_collision_state.sorted_pairs[pair_idx, i_b, 1]
+
+                # Ensure consistent ordering
+                if geoms_info.type[i_ga] > geoms_info.type[i_gb]:
+                    i_ga, i_gb = i_gb, i_ga
+
+                ga_pos = geoms_state.pos[i_ga, i_b]
+                ga_quat = geoms_state.quat[i_ga, i_b]
+                gb_pos = geoms_state.pos[i_gb, i_b]
+                gb_quat = geoms_state.quat[i_gb, i_b]
+
+                is_col = False
+                normal = qd.Vector.zero(gs.qd_float, 3)
+                contact_pos = qd.Vector.zero(gs.qd_float, 3)
+                penetration = gs.qd_float(0.0)
+
+                # Branch-free analytical computation based on bucket
+                if qd.static(bucket_id == 0):  # Sphere-Sphere
+                    # Simple sphere-sphere contact
+                    center_distance = (gb_pos - ga_pos).norm()
+                    radius_sum = geoms_info.data[i_ga][0] + geoms_info.data[i_gb][0]
+
+                    if center_distance < radius_sum and center_distance > rigid_global_info.EPS[None]:
+                        is_col = True
+                        normal = (gb_pos - ga_pos).normalized()
+                        penetration = radius_sum - center_distance
+                        contact_pos = ga_pos + normal * (geoms_info.data[i_ga][0] - 0.5 * penetration)
+
+                elif qd.static(bucket_id == 1):  # Sphere-Capsule
+                    is_col, normal, contact_pos, penetration = capsule_contact.func_sphere_capsule_contact(
+                        i_ga, i_gb, ga_pos, ga_quat, gb_pos, gb_quat, geoms_info, rigid_global_info
+                    )
+                elif qd.static(bucket_id == 2):  # Capsule-Capsule
+                    is_col, normal, contact_pos, penetration = capsule_contact.func_capsule_capsule_contact(
+                        i_ga, i_gb, ga_pos, ga_quat, gb_pos, gb_quat, geoms_info, rigid_global_info
+                    )
+
+                # Write contact if collision detected
+                if is_col:
+                    # Find original pair index for contact storage
+                    original_pair_idx = find_original_pair_index(i_ga, i_gb, collider_state, i_b)
+                    if original_pair_idx >= 0:
+                        func_add_contact(
+                            i_ga, i_gb, normal, contact_pos, penetration, i_b, original_pair_idx,
+                            geoms_state, geoms_info, collider_state, collider_info, errno,
+                            use_atomic=True
+                        )
+
+
+@qd.kernel(fastcache=gs.use_fastcache)
+def _func_narrowphase_semi_analytical(
+    geoms_state: array_class.GeomsState,
+    geoms_info: array_class.GeomsInfo,
+    geoms_init_AABB: array_class.GeomsInitAABB,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: qd.template(),
+    collider_state: array_class.ColliderState,
+    collider_info: array_class.ColliderInfo,
+    collider_static_config: qd.template(),
+    sorted_collision_state: array_class.SortedCollisionState,
+    support_field_info: array_class.SupportFieldInfo,
+    errno: array_class.V_ANNOTATION,
+    bucket_id: qd.template(),  # 3=Plane, 4=Box-Box
+    n_envs: qd.template(),
+):
+    """Specialized kernel for semi-analytical methods (Plane, Box-Box).
+
+    Medium register pressure - semi-analytical paths only for good SIMD efficiency.
+    """
+
+    for i_b in range(n_envs):
+        bucket_start = sorted_collision_state.bucket_offsets[i_b, bucket_id]
+        bucket_size = sorted_collision_state.bucket_counts[i_b, bucket_id]
+
+        for chunk_start in range(0, bucket_size, 64):
+            chunk_end = qd.min(chunk_start + 64, bucket_size)
+
+            for local_idx in range(chunk_end - chunk_start):
+                pair_idx = bucket_start + chunk_start + local_idx
+                i_ga = sorted_collision_state.sorted_pairs[pair_idx, i_b, 0]
+                i_gb = sorted_collision_state.sorted_pairs[pair_idx, i_b, 1]
+
+                if geoms_info.type[i_ga] > geoms_info.type[i_gb]:
+                    i_ga, i_gb = i_gb, i_ga
+
+                ga_pos = geoms_state.pos[i_ga, i_b]
+                ga_quat = geoms_state.quat[i_ga, i_b]
+                gb_pos = geoms_state.pos[i_gb, i_b]
+                gb_quat = geoms_state.quat[i_gb, i_b]
+
+                is_col = False
+                normal = qd.Vector.zero(gs.qd_float, 3)
+                contact_pos = qd.Vector.zero(gs.qd_float, 3)
+                penetration = gs.qd_float(0.0)
+
+                if qd.static(bucket_id == 3):  # Plane contacts
+                    if geoms_info.type[i_ga] == gs.GEOM_TYPE.PLANE:
+                        plane_dir = qd.Vector([geoms_info.data[i_ga][0], geoms_info.data[i_ga][1],
+                                             geoms_info.data[i_ga][2]], dt=gs.qd_float)
+                        plane_dir = gu.qd_transform_by_quat(plane_dir, ga_quat)
+                        normal = -plane_dir.normalized()
+
+                        v1 = mpr.support_driver(
+                            geoms_info, collider_state, collider_static_config,
+                            support_field_info, normal, i_gb, i_b, gb_pos, gb_quat
+                        )
+                        penetration = normal.dot(v1 - ga_pos)
+                        contact_pos = v1 - 0.5 * penetration * normal
+                        is_col = penetration > 0.0
+
+                elif qd.static(bucket_id == 4):  # Box-Box
+                    if qd.static(static_rigid_sim_config.box_box_detection):
+                        from .box_contact import func_box_box_contact
+                        is_col, normal, contact_pos, penetration = func_box_box_contact(
+                            i_ga, i_gb, ga_pos, ga_quat, gb_pos, gb_quat, geoms_info, rigid_global_info
+                        )
+
+                if is_col:
+                    original_pair_idx = find_original_pair_index(i_ga, i_gb, collider_state, i_b)
+                    if original_pair_idx >= 0:
+                        func_add_contact(
+                            i_ga, i_gb, normal, contact_pos, penetration, i_b, original_pair_idx,
+                            geoms_state, geoms_info, collider_state, collider_info, errno,
+                            use_atomic=True
+                        )
+
+
+@qd.kernel(fastcache=gs.use_fastcache)
+def _func_narrowphase_iterative_slow(
+    geoms_state: array_class.GeomsState,
+    geoms_info: array_class.GeomsInfo,
+    geoms_init_AABB: array_class.GeomsInitAABB,
+    verts_info: array_class.VertsInfo,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: qd.template(),
+    collider_state: array_class.ColliderState,
+    collider_info: array_class.ColliderInfo,
+    collider_static_config: qd.template(),
+    mpr_state: array_class.MPRState,
+    mpr_info: array_class.MPRInfo,
+    gjk_state: array_class.GJKState,
+    gjk_info: array_class.GJKInfo,
+    sorted_collision_state: array_class.SortedCollisionState,
+    support_field_info: array_class.SupportFieldInfo,
+    errno: array_class.V_ANNOTATION,
+    bucket_id: qd.template(),  # 5=Terrain, 6=General convex
+    n_envs: qd.template(),
+    n_chunks: qd.template(),
+):
+    """Specialized kernel for iterative collision detection (GJK/MPR).
+
+    Full register usage - complex iterative algorithms with lower occupancy but full resources.
+    """
+
+    _grid_size = n_envs * n_chunks
+
+    for flat_idx in range(_grid_size):
+        i_b = flat_idx // n_chunks
+        chunk = flat_idx % n_chunks
+
+        bucket_start = sorted_collision_state.bucket_offsets[i_b, bucket_id]
+        bucket_size = sorted_collision_state.bucket_counts[i_b, bucket_id]
+
+        # Distribute work across chunks
+        pair_start = chunk * bucket_size // n_chunks
+        pair_end = (chunk + 1) * bucket_size // n_chunks
+
+        for local_pair in range(pair_end - pair_start):
+            pair_idx = bucket_start + pair_start + local_pair
+            i_ga = sorted_collision_state.sorted_pairs[pair_idx, i_b, 0]
+            i_gb = sorted_collision_state.sorted_pairs[pair_idx, i_b, 1]
+
+            if geoms_info.type[i_ga] > geoms_info.type[i_gb]:
+                i_ga, i_gb = i_gb, i_ga
+
+            ga_pos = geoms_state.pos[i_ga, i_b]
+            ga_quat = geoms_state.quat[i_ga, i_b]
+            gb_pos = geoms_state.pos[i_gb, i_b]
+            gb_quat = geoms_state.quat[i_gb, i_b]
+
+            is_col = False
+            normal = qd.Vector.zero(gs.qd_float, 3)
+            contact_pos = qd.Vector.zero(gs.qd_float, 3)
+            penetration = gs.qd_float(0.0)
+
+            # Complex iterative algorithms with full state access
+            if qd.static(bucket_id == 5):  # Terrain contacts
+                if qd.static(collider_static_config.has_terrain):
+                    is_col, normal, contact_pos, penetration = func_contact_mpr_terrain(
+                        i_ga, i_gb, i_b, geoms_state, geoms_info, geoms_init_AABB,
+                        static_rigid_sim_config, collider_state, collider_info,
+                        collider_static_config, mpr_state, mpr_info,
+                        support_field_info, errno
+                    )
+            elif qd.static(bucket_id == 6):  # General convex-convex
+                # Use original complex GJK/MPR logic with algorithm switching
+                EPS = rigid_global_info.EPS[None]
+
+                multi_contact = (
+                    static_rigid_sim_config.enable_multi_contact
+                    and geoms_info.type[i_ga] != gs.GEOM_TYPE.SPHERE
+                    and geoms_info.type[i_ga] != gs.GEOM_TYPE.ELLIPSOID
+                    and geoms_info.type[i_gb] != gs.GEOM_TYPE.SPHERE
+                    and geoms_info.type[i_gb] != gs.GEOM_TYPE.ELLIPSOID
+                )
+
+                tolerance = func_compute_tolerance(
+                    i_ga, i_gb, i_b, collider_info.mc_tolerance[None], geoms_info, geoms_init_AABB
+                )
+
+                prefer_gjk = qd.static(collider_static_config.ccd_algorithm == CCD_ALGORITHM_CODE.GJK) or qd.static(
+                    collider_static_config.ccd_algorithm == CCD_ALGORITHM_CODE.MJ_GJK
+                )
+
+                original_pair_idx = find_original_pair_index(i_ga, i_gb, collider_state, i_b)
+                i_pair = original_pair_idx
+
+                # GJK detection if enabled
+                if qd.static(
+                    collider_static_config.ccd_algorithm in (CCD_ALGORITHM_CODE.GJK, CCD_ALGORITHM_CODE.MJ_GJK)
+                ):
+                    gjk.clear_cache(gjk_state, flat_idx)
+                    distance = gjk.func_gjk(
+                        geoms_info, verts_info, static_rigid_sim_config, collider_state,
+                        collider_static_config, gjk_state, gjk_info, support_field_info,
+                        i_ga, i_gb, flat_idx, ga_pos, ga_quat, gb_pos, gb_quat,
+                        shrink_sphere=False,
+                    )
+                    is_col = distance < gjk_info.collision_eps[None]
+
+                # MPR detection if enabled
+                if qd.static(
+                    collider_static_config.ccd_algorithm in (CCD_ALGORITHM_CODE.MPR, CCD_ALGORITHM_CODE.MJ_MPR)
+                ):
+                    is_mpr_updated = False
+                    normal_ws = collider_state.contact_cache.normal[i_pair, i_b] if i_pair >= 0 else qd.Vector.zero(gs.qd_float, 3)
+                    is_mpr_guess_direction_available = (qd.abs(normal_ws) > EPS).any()
+
+                    for i_mpr in range(2):
+                        if i_mpr == 1:
+                            if qd.static(not static_rigid_sim_config.enable_mujoco_compatibility):
+                                if not is_col and is_mpr_guess_direction_available:
+                                    normal_ws = qd.Vector.zero(gs.qd_float, 3)
+                                    is_mpr_guess_direction_available = False
+                                    is_mpr_updated = False
+
+                        if not is_mpr_updated:
+                            is_col, normal, penetration, contact_pos = mpr.func_mpr_contact(
+                                geoms_info, geoms_init_AABB, rigid_global_info,
+                                static_rigid_sim_config, collider_state, collider_static_config,
+                                mpr_state, mpr_info, support_field_info,
+                                i_ga, i_gb, flat_idx, normal_ws,
+                                ga_pos, ga_quat, gb_pos, gb_quat,
+                            )
+                            is_mpr_updated = True
+
+                    if qd.static(collider_static_config.ccd_algorithm == CCD_ALGORITHM_CODE.MPR):
+                        if penetration > tolerance:
+                            prefer_gjk = (
+                                collider_info.mc_tolerance[None] * penetration
+                                >= collider_info.mpr_to_gjk_overlap_ratio[None] * tolerance
+                            )
+
+                # Handle contacts
+                if is_col and original_pair_idx >= 0:
+                    if qd.static(collider_static_config.ccd_algorithm in (CCD_ALGORITHM_CODE.MPR, CCD_ALGORITHM_CODE.GJK)):
+                        collider_state.contact_cache.normal[original_pair_idx, i_b] = normal
+
+                    if prefer_gjk:
+                        # GJK algorithm: always enqueue to GJK queue
+                        if qd.static(collider_static_config.ccd_algorithm != CCD_ALGORITHM_CODE.MJ_MPR):
+                            _func_enqueue_for_multicontact(
+                                collider_state, i_b, i_ga, i_gb, original_pair_idx,
+                                contact_pos, normal, penetration, prefer_gjk=True,
+                            )
+                    elif multi_contact:
+                        # Enqueue for multicontact processing
+                        _func_enqueue_for_multicontact(
+                            collider_state, i_b, i_ga, i_gb, original_pair_idx,
+                            contact_pos, normal, penetration, prefer_gjk=False,
+                        )
+                    else:
+                        func_add_contact(
+                            i_ga, i_gb, normal, contact_pos, penetration, i_b, original_pair_idx,
+                            geoms_state, geoms_info, collider_state, collider_info, errno,
+                            use_atomic=True
+                        )
+                elif not is_col and original_pair_idx >= 0:
+                    collider_state.contact_cache.normal[original_pair_idx, i_b] = qd.Vector.zero(gs.qd_float, 3)
+
+
+def func_narrowphase_contact0_optimized(
+    geoms_state,
+    geoms_info,
+    geoms_init_AABB,
+    verts_info,
+    rigid_global_info,
+    static_rigid_sim_config,
+    collider_state,
+    collider_info,
+    collider_static_config,
+    mpr_state,
+    mpr_info,
+    gjk_state,
+    gjk_info,
+    support_field_info,
+    sorted_collision_state,
+    errno,
+    enable_bucket_sorting,
+    n_envs,
+    n_chunks,
+):
+    """Optimized narrowphase contact detection with reduced branch divergence.
+
+    This Python function orchestrates specialized kernels for different geometry type combinations
+    to improve SIMD efficiency and reduce register pressure by launching kernels sequentially.
+
+    Args:
+        enable_bucket_sorting: If True, uses optimized kernel splitting approach.
+                             If False, falls back to original monolithic kernel.
+    """
+
+    if enable_bucket_sorting:
+        # Step 1: Sort collision pairs by geometry type for SIMD efficiency
+        _func_sort_collision_pairs_by_type(
+            geoms_info, collider_state, sorted_collision_state, n_envs
+        )
+
+        # Step 2: Launch specialized kernels for each bucket
+        # Fast analytical kernels (high occupancy, low register pressure)
+        for bucket_id in [0, 1, 2]:  # Sphere-Sphere, Sphere-Capsule, Capsule-Capsule
+            _func_narrowphase_analytical_fast(
+                geoms_state, geoms_info, rigid_global_info, collider_state,
+                collider_info, sorted_collision_state, errno, bucket_id, n_envs
+            )
+
+        # Semi-analytical kernels (medium occupancy)
+        for bucket_id in [3, 4]:  # Plane, Box-Box
+            _func_narrowphase_semi_analytical(
+                geoms_state, geoms_info, geoms_init_AABB, rigid_global_info,
+                static_rigid_sim_config, collider_state, collider_info,
+                collider_static_config, sorted_collision_state, support_field_info,
+                errno, bucket_id, n_envs
+            )
+
+        # Iterative kernels (full resources, lower occupancy)
+        for bucket_id in [5, 6]:  # Terrain, General convex
+            _func_narrowphase_iterative_slow(
+                geoms_state, geoms_info, geoms_init_AABB, verts_info,
+                rigid_global_info, static_rigid_sim_config, collider_state,
+                collider_info, collider_static_config, mpr_state, mpr_info,
+                gjk_state, gjk_info, sorted_collision_state, support_field_info,
+                errno, bucket_id, n_envs, n_chunks
+            )
+    else:
+        # Fallback to original monolithic kernel
+        _func_narrowphase_contact0(
+            geoms_state, geoms_info, geoms_init_AABB, verts_info, rigid_global_info,
+            static_rigid_sim_config, collider_state, collider_info, collider_static_config,
+            mpr_state, mpr_info, gjk_state, gjk_info, support_field_info,
+            errno, n_envs, n_chunks
+        )
