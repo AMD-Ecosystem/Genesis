@@ -137,6 +137,7 @@ def func_collision_clear(
         else:
             collider_state.n_contacts[i_b] = 0
 
+MAX_GEOMS_IN_LDS = 46
 
 @qd.func
 def func_broad_phase_lds(
@@ -164,11 +165,11 @@ def func_broad_phase_lds(
     # Clear collider state
     func_collision_clear(links_state, links_info, collider_state, static_rigid_sim_config)
 
-    MAX_GEOMS_NUM = qd.static(46)
+    MAX_GEOMS_NUM = qd.static(MAX_GEOMS_IN_LDS)
     MAX_SORT_ELEM_NUM = qd.static(MAX_GEOMS_NUM * 2)
 
     BLOCK_DIM = qd.static(64)
-    ENVS_PER_BLOCK = qd.static(16 if MAX_GEOMS_NUM <= 46 else 8)
+    ENVS_PER_BLOCK = qd.static(16)
     THREADS_PER_ENV = qd.static(BLOCK_DIM // ENVS_PER_BLOCK)
 
     qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, block_dim=BLOCK_DIM)
@@ -226,6 +227,15 @@ def func_broad_phase_lds(
                         lds_sort_value[i_b_lds, i] = geoms_state.aabb_min[i_g, i_b][axis]
 
                     lds_sort_i_g[i_b_lds, i] = i_g
+            else:
+                for i in range(env_n_geoms * 2):
+                    is_max = collider_state.sort_buffer.is_max[i, i_b]
+                    i_g = collider_state.sort_buffer.i_g[i, i_b]
+                    value = collider_state.sort_buffer.value[i, i_b]
+                    lds_sort_is_max[i_b_lds, i] = is_max
+                    lds_sort_i_g[i_b_lds, i] = i_g
+                    lds_sort_value[i_b_lds, i] = value
+                    
 
         for i in range(env_n_geoms):
             lds_active[i_b_lds, i] = collider_state.active_buffer[i, i_b]
@@ -450,7 +460,7 @@ def func_broad_phase(
     potential collision pairs based on the AABB overlap.
     """
 
-    if qd.static(static_rigid_sim_config.n_geoms <= 46 and static_rigid_sim_config.backend != gs.cpu):
+    if qd.static(static_rigid_sim_config.n_geoms <= MAX_GEOMS_IN_LDS and static_rigid_sim_config.backend != gs.cpu):
         func_broad_phase_lds(
             links_state,
             links_info,
