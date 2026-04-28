@@ -237,21 +237,66 @@ def func_broad_phase(
                 else:
                     geoms_state.min_buffer_idx[key_i_g, i_b] = j + 1
 
-        # sweep over the sorted AABBs to find potential collision pairs
+        
         n_broad = 0
         if qd.static(not static_rigid_sim_config.use_hibernation):
             n_active = 0
+
             for i in range(2 * env_n_geoms):
-                if not collider_state.sort_buffer.is_max[i, i_b]:
+                i_g = collider_state.sort_buffer.i_g[i, i_b]
+                is_max = collider_state.sort_buffer.is_max[i, i_b]
+
+                if not is_max:
+                    
+                    min_b0 = geoms_state.aabb_min[i_g, i_b][0]
+                    min_b1 = geoms_state.aabb_min[i_g, i_b][1]
+                    min_b2 = geoms_state.aabb_min[i_g, i_b][2]
+                    max_b0 = geoms_state.aabb_max[i_g, i_b][0]
+                    max_b1 = geoms_state.aabb_max[i_g, i_b][1]
+                    max_b2 = geoms_state.aabb_max[i_g, i_b][2]
+
+                    
                     for j in range(n_active):
                         i_ga = collider_state.active_buffer[j, i_b]
-                        i_gb = collider_state.sort_buffer.i_g[i, i_b]
-                        if i_ga > i_gb:
-                            i_ga, i_gb = i_gb, i_ga
 
+                        # 1. CHEAPEST: axis overlap (SAP guarantees min overlaps, check max)
+                        max_a_axis = geoms_state.aabb_max[i_ga, i_b][axis]
+                        if max_a_axis < min_b0:  # axis=0, so min_b0
+                            continue
+
+                        
+                        min_a0 = geoms_state.aabb_min[i_ga, i_b][0]
+                        max_a0 = geoms_state.aabb_max[i_ga, i_b][0]
+                        min_a1 = geoms_state.aabb_min[i_ga, i_b][1]
+                        max_a1 = geoms_state.aabb_max[i_ga, i_b][1]
+                        min_a2 = geoms_state.aabb_min[i_ga, i_b][2]
+                        max_a2 = geoms_state.aabb_max[i_ga, i_b][2]
+
+                        if not (min_a0 <= max_b0 and max_a0 >= min_b0 and
+                                min_a1 <= max_b1 and max_a1 >= min_b1 and
+                                min_a2 <= max_b2 and max_a2 >= min_b2):
+                            if qd.static(not static_rigid_sim_config.enable_mujoco_compatibility):
+                                # canonical ordering for pair idx lookup
+                                i_ga_p = i_ga
+                                i_gb_p = i_g
+                                if i_ga > i_g:
+                                    i_ga_p = i_g
+                                    i_gb_p = i_ga
+                                i_pair = collider_info.collision_pair_idx[i_ga_p, i_gb_p]
+                                collider_state.contact_cache.normal[i_pair, i_b] = qd.Vector.zero(gs.qd_float, 3)
+                            continue
+
+                        
+                        i_ga_c = i_ga
+                        i_gb_c = i_g
+                        if i_ga > i_g:
+                            i_ga_c = i_g
+                            i_gb_c = i_ga
+
+                        
                         if not func_check_collision_valid(
-                            i_ga,
-                            i_gb,
+                            i_ga_c,
+                            i_gb_c,
                             i_b,
                             links_state,
                             links_info,
@@ -264,31 +309,27 @@ def func_broad_phase(
                         ):
                             continue
 
-                        if not func_is_geom_aabbs_overlap(geoms_state, i_ga, i_gb, i_b):
-                            # Clear collision normal cache if not in contact
-                            if qd.static(not static_rigid_sim_config.enable_mujoco_compatibility):
-                                i_pair = collider_info.collision_pair_idx[i_ga, i_gb]
-                                collider_state.contact_cache.normal[i_pair, i_b] = qd.Vector.zero(gs.qd_float, 3)
-                            continue
-
-                        if n_broad == collider_info.max_collision_pairs_broad[None]:
+                        # write result
+                        if n_broad < collider_info.max_collision_pairs_broad[None]:
+                            collider_state.broad_collision_pairs[n_broad, i_b][0] = i_ga_c
+                            collider_state.broad_collision_pairs[n_broad, i_b][1] = i_gb_c
+                            n_broad += 1
+                        else:
                             errno[i_b] = errno[i_b] | array_class.ErrorCode.OVERFLOW_CANDIDATE_CONTACTS
-                            break
-                        collider_state.broad_collision_pairs[n_broad, i_b][0] = i_ga
-                        collider_state.broad_collision_pairs[n_broad, i_b][1] = i_gb
-                        n_broad = n_broad + 1
 
-                    collider_state.active_buffer[n_active, i_b] = collider_state.sort_buffer.i_g[i, i_b]
-                    n_active = n_active + 1
+                    
+                    collider_state.active_buffer[n_active, i_b] = i_g
+                    n_active += 1
+
                 else:
-                    i_g_to_remove = collider_state.sort_buffer.i_g[i, i_b]
+                   
                     for j in range(n_active):
-                        if collider_state.active_buffer[j, i_b] == i_g_to_remove:
-                            if j < n_active - 1:
-                                for k in range(j, n_active - 1):
-                                    collider_state.active_buffer[k, i_b] = collider_state.active_buffer[k + 1, i_b]
-                            n_active = n_active - 1
+                        if collider_state.active_buffer[j, i_b] == i_g:
+                            collider_state.active_buffer[j, i_b] = collider_state.active_buffer[n_active - 1, i_b]
+                            n_active -= 1
                             break
+
+            collider_state.n_broad_pairs[i_b] = n_broad
         else:
             if rigid_global_info.n_awake_dofs[i_b] > 0:
                 n_active_awake = 0
