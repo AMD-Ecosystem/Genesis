@@ -84,7 +84,7 @@ def _kernel_update_constraint_qfrc(
     static_rigid_sim_config: ti.template(),
 ):
     """Compute qfrc_constraint = J^T @ efc_force, parallelized over (dof, env)."""
-    n_dofs = static_rigid_sim_config.n_dofs_
+    n_dofs = constraint_state.qfrc_constraint.shape[0]
     _B = static_rigid_sim_config.n_envs
 
     for i_d, i_b in ti.ndrange(n_dofs, _B):
@@ -108,7 +108,7 @@ def _kernel_update_constraint_cost(
     ti.loop_config(block_dim=32)
     for i_b in range(_B):
         if constraint_state.n_constraints[i_b] > 0 and constraint_state.improved[i_b]:
-            n_dofs = static_rigid_sim_config.n_dofs_
+            n_dofs = constraint_state.qfrc_constraint.shape[0]
             ne = constraint_state.n_constraints_equality[i_b]
             nef = ne + constraint_state.n_constraints_frictionloss[i_b]
             n_con = constraint_state.n_constraints[i_b]

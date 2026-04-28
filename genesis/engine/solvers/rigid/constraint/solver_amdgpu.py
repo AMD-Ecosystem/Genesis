@@ -18,12 +18,16 @@ of the baked-in monolithic kernel `func_solve_body_monolith` on gfx942:
   compiler would otherwise have to carry through the `for _ in
   range(iterations):` loop.
 
-Both AMD variants drop the per-iteration `if not improved: break`
-early-exit because reading `improved` from the host requires a per-iter
-D2H sync (which kills throughput more than the saved iterations buy).
-Per-batch convergence is still respected: kernels skip work for batches
-where `constraint_state.improved[i_b] == False`. This matches the existing
-CUDA `func_solve_decomposed` behavior in `solver_breakdown.py`.
+Both AMD variants lift the iteration loop into Python (instead of inside
+the kernel) but preserve baseline per-batch convergence semantics: each
+inner per-iter kernel gates on `constraint_state.improved[i_b]` (a
+device-side read, no D2H sync) and skips both the linesearch+apply step
+and the post-linesearch update for batches that have already converged.
+Without this gate, converged batches would re-run linesearch using a
+stale `search` direction and inject FP noise into qacc/Ma/Jaref that
+accumulates over many sim steps (broke test_mesh_align). This matches
+the existing CUDA `func_solve_decomposed` behavior in
+`solver_breakdown.py`.
 
 Both variants pin `block_dim=64` to avoid the 50% VALU-lane-masking
 penalty wave64 hardware imposes on 32-thread workgroups (see comment on
@@ -56,7 +60,12 @@ def _kernel_linesearch_amdgpu(
         block_dim=64,
     )
     for i_b in range(_B):
-        if constraint_state.n_constraints[i_b] > 0:
+        # Gate linesearch on improved[i_b] to mirror baseline `if not improved: break`.
+        # Without this gate, a converged batch (improved=False) would re-run linesearch on the
+        # next iteration using a stale `search` direction; if the resulting alpha is non-trivial
+        # the qacc/Ma/Jaref updates inject noise that accumulates over many sim steps.
+        # improved[i_b] is read device-side, so this gate adds no host sync cost.
+        if constraint_state.n_constraints[i_b] > 0 and constraint_state.improved[i_b]:
             solver.func_linesearch_and_apply_alpha(
                 i_b,
                 entities_info=entities_info,
@@ -141,7 +150,9 @@ def _kernel_solve_one_iter_amdgpu(
         block_dim=64,
     )
     for i_b in range(_B):
-        if constraint_state.n_constraints[i_b] > 0:
+        # Same gating rationale as the B3 linesearch kernel: skip work for batches that have
+        # already converged so we don't apply spurious alpha steps using a stale search direction.
+        if constraint_state.n_constraints[i_b] > 0 and constraint_state.improved[i_b]:
             solver.func_solve_iter(
                 i_b,
                 entities_info=entities_info,
