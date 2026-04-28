@@ -215,9 +215,9 @@ class Collider:
             def _round_up_64(n):
                 return (n + 63) & ~63
 
-            # AMD-specific optimization: use mult=128 for multicontact kernel
+            # AMD-specific optimization: mult=256 for multicontact kernel
             if torch.version.hip:
-                multicontact_cuda_cores = gpu_props.multi_processor_count * 128
+                multicontact_cuda_cores = gpu_props.multi_processor_count * 256
             else:
                 multicontact_cuda_cores = gpu_cuda_cores
 
