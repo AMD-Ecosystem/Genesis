@@ -167,6 +167,9 @@ def func_broad_phase_lds(
 
     MAX_GEOMS_NUM = qd.static(MAX_GEOMS_IN_LDS)
     MAX_SORT_ELEM_NUM = qd.static(MAX_GEOMS_NUM * 2)
+    # Pad row stride by +1 so that 16 lanes (one per env in a workgroup) hit 16 distinct
+    # LDS banks for column-aligned accesses instead of colliding 2-way (gcd(92, 32) = 4).
+    LDS_ROW_STRIDE = qd.static(MAX_SORT_ELEM_NUM + 1)
 
     BLOCK_DIM = qd.static(64)
     ENVS_PER_BLOCK = qd.static(16)
@@ -178,11 +181,17 @@ def func_broad_phase_lds(
         if i_thread - i_b * THREADS_PER_ENV != 0:
             continue
 
-        lds_sort_value = qd.simt.block.SharedArray((ENVS_PER_BLOCK, MAX_SORT_ELEM_NUM), gs.qd_float)
-        lds_sort_i_g = qd.simt.block.SharedArray((ENVS_PER_BLOCK, MAX_SORT_ELEM_NUM), gs.qd_int)
-        lds_sort_is_max = qd.simt.block.SharedArray((ENVS_PER_BLOCK, MAX_SORT_ELEM_NUM), gs.qd_bool)
+        # `lds_sort_i_g_packed` stores `(i_g << 1) | is_max` — packing the SAP endpoint flag
+        # into the low bit of the geom index removes a separate LDS array (and its loads/stores)
+        # from the inner sort/sweep loops. Geom ids fit easily in 31 bits.
+        lds_sort_value = qd.simt.block.SharedArray((ENVS_PER_BLOCK, LDS_ROW_STRIDE), gs.qd_float)
+        lds_sort_i_g_packed = qd.simt.block.SharedArray((ENVS_PER_BLOCK, LDS_ROW_STRIDE), gs.qd_int)
         lds_active = qd.simt.block.SharedArray((ENVS_PER_BLOCK, MAX_GEOMS_NUM), gs.qd_int)
-        
+        # Reverse map: for each geom id, its current index in `lds_active` (or stale if not active).
+        # Lets us remove a geom in O(1) instead of O(n_active) linear-shift, in the hot
+        # non-hibernation sweep path.
+        lds_pos_in_active = qd.simt.block.SharedArray((ENVS_PER_BLOCK, MAX_GEOMS_NUM), gs.qd_int)
+
         i_b_lds = i_b % ENVS_PER_BLOCK
 
         axis = 0
@@ -194,19 +203,18 @@ def func_broad_phase_lds(
             I_l = [i_l, i_b] if qd.static(static_rigid_sim_config.batch_links_info) else i_l
             env_n_geoms = env_n_geoms + links_info.geom_end[I_l] - links_info.geom_start[I_l]
 
-        # copy updated geom aabbs to buffer for sorting
+        # copy updated geom aabbs to buffer for sorting.
+        # Packed format: lds_sort_i_g_packed = (i_g << 1) | is_max_bit
         if collider_state.first_time[i_b]:
             i_buffer = 0
             for i_l in range(n_links):
                 I_l = [i_l, i_b] if qd.static(static_rigid_sim_config.batch_links_info) else i_l
                 for i_g in range(links_info.geom_start[I_l], links_info.geom_end[I_l]):
                     lds_sort_value[i_b_lds, 2 * i_buffer] = geoms_state.aabb_min[i_g, i_b][axis]
-                    lds_sort_i_g[i_b_lds, 2 * i_buffer] = i_g
-                    lds_sort_is_max[i_b_lds, 2 * i_buffer] = False
+                    lds_sort_i_g_packed[i_b_lds, 2 * i_buffer] = i_g << 1  # is_max=0
 
                     lds_sort_value[i_b_lds, 2 * i_buffer + 1] = geoms_state.aabb_max[i_g, i_b][axis]
-                    lds_sort_i_g[i_b_lds, 2 * i_buffer + 1] = i_g
-                    lds_sort_is_max[i_b_lds, 2 * i_buffer + 1] = True
+                    lds_sort_i_g_packed[i_b_lds, 2 * i_buffer + 1] = (i_g << 1) | 1  # is_max=1
 
                     geoms_state.min_buffer_idx[i_buffer, i_b] = 2 * i_g
                     geoms_state.max_buffer_idx[i_buffer, i_b] = 2 * i_g + 1
@@ -220,51 +228,49 @@ def func_broad_phase_lds(
                 for i in range(env_n_geoms * 2):
                     is_max = collider_state.sort_buffer.is_max[i, i_b]
                     i_g = collider_state.sort_buffer.i_g[i, i_b]
-                    lds_sort_is_max[i_b_lds, i] = is_max
                     if is_max:
                         lds_sort_value[i_b_lds, i] = geoms_state.aabb_max[i_g, i_b][axis]
+                        lds_sort_i_g_packed[i_b_lds, i] = (i_g << 1) | 1
                     else:
                         lds_sort_value[i_b_lds, i] = geoms_state.aabb_min[i_g, i_b][axis]
-
-                    lds_sort_i_g[i_b_lds, i] = i_g
+                        lds_sort_i_g_packed[i_b_lds, i] = i_g << 1
             else:
                 for i in range(env_n_geoms * 2):
                     is_max = collider_state.sort_buffer.is_max[i, i_b]
                     i_g = collider_state.sort_buffer.i_g[i, i_b]
-                    value = collider_state.sort_buffer.value[i, i_b]
-                    lds_sort_is_max[i_b_lds, i] = is_max
-                    lds_sort_i_g[i_b_lds, i] = i_g
-                    lds_sort_value[i_b_lds, i] = value
-                    
+                    lds_sort_value[i_b_lds, i] = collider_state.sort_buffer.value[i, i_b]
+                    lds_sort_i_g_packed[i_b_lds, i] = (i_g << 1) | qd.cast(is_max, gs.qd_int)
 
-        for i in range(env_n_geoms):
-            lds_active[i_b_lds, i] = collider_state.active_buffer[i, i_b]
+        # Note: the previous implementation copied `collider_state.active_buffer` into `lds_active`
+        # here, but it was dead — the sweep below starts with `n_active = 0` and rebuilds the set
+        # from scratch. Removing the read saves env_n_geoms HBM loads per env per call.
 
-        # insertion sort, which has complexity near O(n) for nearly sorted array
+        # insertion sort, which has complexity near O(n) for nearly sorted array.
+        # Inner loop now does 2 LDS shifts/iter (value + packed i_g) instead of 3.
         for i in range(1, 2 * env_n_geoms):
             key_value = lds_sort_value[i_b_lds, i]
-            key_is_max = lds_sort_is_max[i_b_lds, i]
-            key_i_g = lds_sort_i_g[i_b_lds, i]
+            key_packed = lds_sort_i_g_packed[i_b_lds, i]
 
             j = i - 1
             while j >= 0 and key_value < lds_sort_value[i_b_lds, j]:
+                shifted_packed = lds_sort_i_g_packed[i_b_lds, j]
                 lds_sort_value[i_b_lds, j + 1] = lds_sort_value[i_b_lds, j]
-                lds_sort_is_max[i_b_lds, j + 1] = lds_sort_is_max[i_b_lds, j]
-                lds_sort_i_g[i_b_lds, j + 1] = lds_sort_i_g[i_b_lds, j]
+                lds_sort_i_g_packed[i_b_lds, j + 1] = shifted_packed
 
                 if qd.static(static_rigid_sim_config.use_hibernation):
-                    if lds_sort_is_max[i_b_lds, j]:
-                        geoms_state.max_buffer_idx[lds_sort_i_g[i_b_lds, j], i_b] = j + 1
+                    shifted_i_g = shifted_packed >> 1
+                    if shifted_packed & 1:
+                        geoms_state.max_buffer_idx[shifted_i_g, i_b] = j + 1
                     else:
-                        geoms_state.min_buffer_idx[lds_sort_i_g[i_b_lds, j], i_b] = j + 1
+                        geoms_state.min_buffer_idx[shifted_i_g, i_b] = j + 1
 
                 j -= 1
             lds_sort_value[i_b_lds, j + 1] = key_value
-            lds_sort_is_max[i_b_lds, j + 1] = key_is_max
-            lds_sort_i_g[i_b_lds, j + 1] = key_i_g
+            lds_sort_i_g_packed[i_b_lds, j + 1] = key_packed
 
             if qd.static(static_rigid_sim_config.use_hibernation):
-                if key_is_max:
+                key_i_g = key_packed >> 1
+                if key_packed & 1:
                     geoms_state.max_buffer_idx[key_i_g, i_b] = j + 1
                 else:
                     geoms_state.min_buffer_idx[key_i_g, i_b] = j + 1
@@ -274,10 +280,13 @@ def func_broad_phase_lds(
         if qd.static(not static_rigid_sim_config.use_hibernation):
             n_active = 0
             for i in range(2 * env_n_geoms):
-                if not lds_sort_is_max[i_b_lds, i]:
+                packed_i = lds_sort_i_g_packed[i_b_lds, i]
+                i_g_i = packed_i >> 1
+                if (packed_i & 1) == 0:
+                    # `min` event: pair this geom with every currently active one.
                     for j in range(n_active):
                         i_ga = lds_active[i_b_lds, j]
-                        i_gb = lds_sort_i_g[i_b_lds, i]
+                        i_gb = i_g_i
                         if i_ga > i_gb:
                             i_ga, i_gb = i_gb, i_ga
 
@@ -310,29 +319,35 @@ def func_broad_phase_lds(
                         collider_state.broad_collision_pairs[n_broad, i_b][1] = i_gb
                         n_broad = n_broad + 1
 
-                    lds_active[i_b_lds, n_active] = lds_sort_i_g[i_b_lds, i]
+                    # Append new geom to active set; record its position for O(1) removal.
+                    lds_active[i_b_lds, n_active] = i_g_i
+                    lds_pos_in_active[i_b_lds, i_g_i] = n_active
                     n_active = n_active + 1
                 else:
-                    i_g_to_remove = lds_sort_i_g[i_b_lds, i]
-                    for j in range(n_active):
-                        if lds_active[i_b_lds, j] == i_g_to_remove:
-                            if j < n_active - 1:
-                                for k in range(j, n_active - 1):
-                                    lds_active[i_b_lds, k] = lds_active[i_b_lds, k + 1]
-                            n_active = n_active - 1
-                            break
+                    # `max` event: remove this geom from the active set in O(1) using
+                    # swap-with-last (set membership is all the sweep cares about).
+                    j = lds_pos_in_active[i_b_lds, i_g_i]
+                    last_idx = n_active - 1
+                    if j != last_idx:
+                        swapped = lds_active[i_b_lds, last_idx]
+                        lds_active[i_b_lds, j] = swapped
+                        lds_pos_in_active[i_b_lds, swapped] = j
+                    n_active = last_idx
         else:
             if rigid_global_info.n_awake_dofs[i_b] > 0:
                 n_active_awake = 0
                 n_active_hib = 0
                 for i in range(2 * env_n_geoms):
-                    is_incoming_geom_hibernated = geoms_state.hibernated[lds_sort_i_g[i_b_lds, i], i_b]
+                    packed_i = lds_sort_i_g_packed[i_b_lds, i]
+                    i_g_i = packed_i >> 1
+                    is_max_i = (packed_i & 1) != 0
+                    is_incoming_geom_hibernated = geoms_state.hibernated[i_g_i, i_b]
 
-                    if not lds_sort_is_max[i_b_lds, i]:
+                    if not is_max_i:
                         # both awake and hibernated geom check with active awake geoms
                         for j in range(n_active_awake):
                             i_ga = collider_state.active_buffer_awake[j, i_b]
-                            i_gb = lds_sort_i_g[i_b_lds, i]
+                            i_gb = i_g_i
                             if i_ga > i_gb:
                                 i_ga, i_gb = i_gb, i_ga
 
@@ -366,7 +381,7 @@ def func_broad_phase_lds(
                         if not is_incoming_geom_hibernated:
                             for j in range(n_active_hib):
                                 i_ga = collider_state.active_buffer_hib[j, i_b]
-                                i_gb = lds_sort_i_g[i_b_lds, i]
+                                i_gb = i_g_i
                                 if i_ga > i_gb:
                                     i_ga, i_gb = i_gb, i_ga
 
@@ -396,13 +411,13 @@ def func_broad_phase_lds(
                                 n_broad = n_broad + 1
 
                         if is_incoming_geom_hibernated:
-                            collider_state.active_buffer_hib[n_active_hib, i_b] = lds_sort_i_g[i_b_lds, i]
+                            collider_state.active_buffer_hib[n_active_hib, i_b] = i_g_i
                             n_active_hib = n_active_hib + 1
                         else:
-                            collider_state.active_buffer_awake[n_active_awake, i_b] = lds_sort_i_g[i_b_lds, i]
+                            collider_state.active_buffer_awake[n_active_awake, i_b] = i_g_i
                             n_active_awake = n_active_awake + 1
                     else:
-                        i_g_to_remove = lds_sort_i_g[i_b_lds, i]
+                        i_g_to_remove = i_g_i
                         if is_incoming_geom_hibernated:
                             for j in range(n_active_hib):
                                 if collider_state.active_buffer_hib[j, i_b] == i_g_to_remove:
@@ -424,16 +439,15 @@ def func_broad_phase_lds(
                                     n_active_awake = n_active_awake - 1
                                     break
 
-        for i in range(env_n_geoms):
-            collider_state.sort_buffer.value[2 * i, i_b] = lds_sort_value[i_b_lds, 2 * i]
-            collider_state.sort_buffer.i_g[2 * i, i_b] = lds_sort_i_g[i_b_lds, 2 * i]
-            collider_state.sort_buffer.is_max[2 * i, i_b] = lds_sort_is_max[i_b_lds, 2 * i]
-
-            collider_state.sort_buffer.value[2 * i + 1, i_b] = lds_sort_value[i_b_lds, 2 * i + 1]
-            collider_state.sort_buffer.i_g[2 * i + 1, i_b] = lds_sort_i_g[i_b_lds, 2 * i + 1]
-            collider_state.sort_buffer.is_max[2 * i + 1, i_b] = lds_sort_is_max[i_b_lds, 2 * i + 1]
-
-            collider_state.active_buffer[i, i_b] = lds_active[i_b_lds, i]
+        # Decode packed (i_g, is_max) back to the persistent global sort_buffer fields.
+        # The `lds_active` writeback was dead in the previous implementation (the sweep ends
+        # with n_active = 0 and the next call rebuilds it from scratch), so it has been
+        # removed entirely.
+        for i in range(2 * env_n_geoms):
+            packed = lds_sort_i_g_packed[i_b_lds, i]
+            collider_state.sort_buffer.value[i, i_b] = lds_sort_value[i_b_lds, i]
+            collider_state.sort_buffer.i_g[i, i_b] = packed >> 1
+            collider_state.sort_buffer.is_max[i, i_b] = qd.cast(packed & 1, gs.qd_bool)
 
         collider_state.n_broad_pairs[i_b] = n_broad
 
