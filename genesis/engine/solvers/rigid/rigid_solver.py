@@ -56,6 +56,7 @@ from .abd.misc import (
     kernel_update_geoms_render_T,
     kernel_update_vgeoms_render_T,
     kernel_bit_reduction,
+    kernel_bit_reduction_into,
     kernel_set_zero,
     kernel_clear_external_force,
 )
@@ -447,6 +448,13 @@ class RigidSolver(KinematicSolver):
         # rigid_solver.links_state, etc. regardless of the solver is active or not.
         self.data_manager = array_class.DataManager(self, kinematic_only=False)
         self._errno = self.data_manager.errno
+
+        if gs.backend == gs.amdgpu:
+            self._errno_reduced = array_class.V(dtype=gs.qd_int, shape=(2,))
+            self._errno_reduced_tc = qd_to_torch(self._errno_reduced)
+            self._errno_pinned = torch.zeros(2, dtype=gs.tc_int, device="cpu", pin_memory=True)
+            self._errno_idx = 0
+            self._errno_armed = False
 
         self._rigid_global_info = self.data_manager.rigid_global_info
         self._rigid_adjoint_cache = self.data_manager.rigid_adjoint_cache
@@ -964,11 +972,30 @@ class RigidSolver(KinematicSolver):
 
     def check_errno(self):
         # TODO: Add some class ErrorCode(IntEnum) to manage error codes x)
-        if gs.use_zerocopy:
+        if gs.backend == gs.amdgpu:
+            self._check_errno_deferred()
+        elif gs.use_zerocopy:
             errno = np.bitwise_or.reduce(qd_to_numpy(self._errno))
+            self._raise_on_errno(errno)
         else:
             errno = kernel_bit_reduction(self._errno)
+            self._raise_on_errno(errno)
 
+    def _check_errno_deferred(self):
+        write_slot = self._errno_idx
+        read_slot = 1 - write_slot
+
+        kernel_bit_reduction_into(self._errno, self._errno_reduced, write_slot)
+        self._errno_pinned.copy_(self._errno_reduced_tc, non_blocking=True)
+
+        if self._errno_armed:
+            errno = int(self._errno_pinned[read_slot].item())
+            self._raise_on_errno(errno)
+
+        self._errno_armed = True
+        self._errno_idx = read_slot
+
+    def _raise_on_errno(self, errno):
         if errno & array_class.ErrorCode.OVERFLOW_CANDIDATE_CONTACTS:
             max_collision_pairs_broad = self.collider._collider_info.max_collision_pairs_broad[None]
             gs.raise_exception(

@@ -820,6 +820,19 @@ def kernel_bit_reduction(tensor: array_class.V_ANNOTATION) -> qd.i32:
 
 
 @qd.kernel(fastcache=gs.use_fastcache)
+def kernel_bit_reduction_into(
+    tensor: array_class.V_ANNOTATION,
+    out: array_class.V_ANNOTATION,
+    slot: qd.i32,
+):
+    # Used by the AMDGPU deferred check_errno path.
+    flag = qd.i32(0)
+    for i in range(tensor.shape[0]):
+        flag = qd.atomic_or(flag, tensor[i])
+    out[slot] = flag
+
+
+@qd.kernel(fastcache=gs.use_fastcache)
 def kernel_set_zero(envs_idx: qd.types.ndarray(), tensor: array_class.V_ANNOTATION):
     for i_b_ in range(envs_idx.shape[0]):
         tensor[i_b_] = 0
