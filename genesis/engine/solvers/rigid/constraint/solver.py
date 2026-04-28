@@ -473,7 +473,7 @@ def kernel_get_equality_constraints(
     equalities_info: array_class.EqualitiesInfo,
     static_rigid_sim_config: qd.template(),
 ):
-    _B = constraint_state.qd_n_equalities.shape[0]
+    _B = static_rigid_sim_config.n_envs
     n_eqs_max = gs.qd_int(0)
 
     # this is a reduction operation (global max), we have to serialize it
@@ -529,7 +529,7 @@ def constraint_solver_kernel_reset(
     constraint_state: array_class.ConstraintState,
     static_rigid_sim_config: qd.template(),
 ):
-    n_dofs = constraint_state.qacc_ws.shape[0]
+    n_dofs = static_rigid_sim_config.n_dofs_
 
     qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
     for i_b_ in range(envs_idx.shape[0]):
@@ -566,7 +566,7 @@ def constraint_solver_kernel_clear(
     rigid_global_info: array_class.RigidGlobalInfo,
     static_rigid_sim_config: qd.template(),
 ):
-    n_dofs = constraint_state.qacc_ws.shape[0]
+    n_dofs = static_rigid_sim_config.n_dofs_
     len_constraints = constraint_state.jac.shape[0]
 
     qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
@@ -584,7 +584,7 @@ def constraint_solver_kernel_masked_clear(
     rigid_global_info: array_class.RigidGlobalInfo,
     static_rigid_sim_config: qd.template(),
 ):
-    n_dofs = constraint_state.qacc_ws.shape[0]
+    n_dofs = static_rigid_sim_config.n_dofs_
     len_constraints = constraint_state.jac.shape[0]
 
     for i_b in range(envs_mask.shape[0]):
@@ -609,8 +609,8 @@ def add_collision_constraints(
 ):
     EPS = rigid_global_info.EPS[None]
 
-    _B = dofs_state.ctrl_mode.shape[1]
-    n_dofs = dofs_state.ctrl_mode.shape[0]
+    _B = static_rigid_sim_config.n_envs
+    n_dofs = static_rigid_sim_config.n_dofs_
     max_contact_pairs = collider_state.contact_data.link_a.shape[0]
 
     qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
@@ -690,6 +690,15 @@ def add_collision_constraints(
                 if qd.static(static_rigid_sim_config.sparse_solve):
                     constraint_state.jac_n_relevant_dofs[n_con, i_b] = con_n_relevant_dofs
                     _sort_relevant_dofs_descending(constraint_state, n_con, con_n_relevant_dofs, i_b)
+                    # C4: project the dense (and now finalized) jac row through
+                    # the sorted relevant_dofs index into compact storage.
+                    # Reads dense jac once at constraint-build time so that the
+                    # hot CG kernels (per-iter) only ever touch jac_compact_values.
+                    for i_d_ in range(con_n_relevant_dofs):
+                        i_d_proj = constraint_state.jac_relevant_dofs[n_con, i_d_, i_b]
+                        constraint_state.jac_compact_values[n_con, i_d_, i_b] = constraint_state.jac[
+                            n_con, i_d_proj, i_b
+                        ]
                 imp, aref = gu.imp_aref(
                     contact_data_sol_params, -contact_data_penetration, jac_qvel, -contact_data_penetration
                 )
@@ -721,7 +730,7 @@ def func_equality_connect(
 ):
     EPS = rigid_global_info.EPS[None]
 
-    n_dofs = dofs_state.ctrl_mode.shape[0]
+    n_dofs = static_rigid_sim_config.n_dofs_
 
     link1_idx = equalities_info.eq_obj1id[i_e, i_b]
     link2_idx = equalities_info.eq_obj2id[i_e, i_b]
@@ -806,6 +815,12 @@ def func_equality_connect(
 
         if qd.static(static_rigid_sim_config.sparse_solve):
             constraint_state.jac_n_relevant_dofs[n_con, i_b] = con_n_relevant_dofs
+            # C4: project dense jac row into compact storage.
+            for i_d_ in range(con_n_relevant_dofs):
+                i_d_proj = constraint_state.jac_relevant_dofs[n_con, i_d_, i_b]
+                constraint_state.jac_compact_values[n_con, i_d_, i_b] = constraint_state.jac[
+                    n_con, i_d_proj, i_b
+                ]
 
         pos_diff = global_anchor1 - global_anchor2
         penetration = pos_diff.norm()
@@ -833,7 +848,7 @@ def func_equality_joint(
 ):
     EPS = rigid_global_info.EPS[None]
 
-    n_dofs = constraint_state.jac.shape[1]
+    n_dofs = static_rigid_sim_config.n_dofs_
 
     sol_params = equalities_info.sol_params[i_e, i_b]
 
@@ -912,7 +927,7 @@ def add_equality_constraints(
     rigid_global_info: array_class.RigidGlobalInfo,
     static_rigid_sim_config: qd.template(),
 ):
-    _B = dofs_state.ctrl_mode.shape[1]
+    _B = static_rigid_sim_config.n_envs
 
     qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
     for i_b in range(_B):
@@ -1016,7 +1031,7 @@ def func_equality_weld(
 ):
     EPS = rigid_global_info.EPS[None]
 
-    n_dofs = dofs_state.ctrl_mode.shape[0]
+    n_dofs = static_rigid_sim_config.n_dofs_
 
     # TODO: sparse mode
     # Get equality info for this constraint
@@ -1130,6 +1145,12 @@ def func_equality_weld(
 
         if qd.static(static_rigid_sim_config.sparse_solve):
             constraint_state.jac_n_relevant_dofs[n_con, i_b] = con_n_relevant_dofs
+            # C4: project dense jac row into compact storage.
+            for i_d_ in range(con_n_relevant_dofs):
+                i_d_proj = constraint_state.jac_relevant_dofs[n_con, i_d_, i_b]
+                constraint_state.jac_compact_values[n_con, i_d_, i_b] = constraint_state.jac[
+                    n_con, i_d_proj, i_b
+                ]
 
         imp, aref = gu.imp_aref(sol_params, -pos_imp, jac_qvel, pos_error[i])
         diag = qd.max(invweight[0] * (1 - imp) / imp, EPS)
@@ -1207,9 +1228,9 @@ def add_joint_limit_constraints(
 ):
     EPS = rigid_global_info.EPS[None]
 
-    _B = constraint_state.jac.shape[2]
-    n_links = links_info.root_idx.shape[0]
-    n_dofs = dofs_state.ctrl_mode.shape[0]
+    _B = static_rigid_sim_config.n_envs
+    n_links = static_rigid_sim_config.n_links_
+    n_dofs = static_rigid_sim_config.n_dofs_
 
     # TODO: sparse mode
     qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
@@ -1251,6 +1272,9 @@ def add_joint_limit_constraints(
                         if qd.static(static_rigid_sim_config.sparse_solve):
                             constraint_state.jac_n_relevant_dofs[n_con, i_b] = 1
                             constraint_state.jac_relevant_dofs[n_con, 0, i_b] = i_d
+                            # C4: compact storage holds the single non-zero
+                            # value (+/-1 here) for this 1-dof joint-limit row.
+                            constraint_state.jac_compact_values[n_con, 0, i_b] = jac
 
 
 @qd.func
@@ -1265,9 +1289,9 @@ def add_frictionloss_constraints(
 ):
     EPS = rigid_global_info.EPS[None]
 
-    _B = constraint_state.jac.shape[2]
-    n_links = links_info.root_idx.shape[0]
-    n_dofs = dofs_state.ctrl_mode.shape[0]
+    _B = static_rigid_sim_config.n_envs
+    n_links = static_rigid_sim_config.n_links_
+    n_dofs = static_rigid_sim_config.n_dofs_
 
     # TODO: sparse mode
     # FIXME: The condition `if dofs_info.frictionloss[I_d] > EPS:` is not correctly evaluated on Apple Metal
@@ -1300,9 +1324,22 @@ def add_frictionloss_constraints(
                         constraint_state.aref[i_con, i_b] = aref
                         constraint_state.efc_D[i_con, i_b] = 1.0 / diag
                         constraint_state.efc_frictionloss[i_con, i_b] = dofs_info.frictionloss[I_d]
-                        for i_d2 in range(n_dofs):
-                            constraint_state.jac[i_con, i_d2, i_b] = gs.qd_float(0.0)
-                        constraint_state.jac[i_con, i_d, i_b] = jac
+                        if qd.static(static_rigid_sim_config.sparse_solve):
+                            # Sparse + C4 path: skip the dense N_d-wide zero-fill
+                            # and write only the single non-zero entry to both
+                            # the dense jac (kept allocated for safety) and the
+                            # compact storage. Also publish the index/count so
+                            # downstream sparse iterators (initialize_Jaref,
+                            # func_update_constraint_batch, func_ls_init_*)
+                            # don't skip this constraint or read stale indices.
+                            constraint_state.jac[i_con, i_d, i_b] = jac
+                            constraint_state.jac_n_relevant_dofs[i_con, i_b] = 1
+                            constraint_state.jac_relevant_dofs[i_con, 0, i_b] = i_d
+                            constraint_state.jac_compact_values[i_con, 0, i_b] = jac
+                        else:
+                            for i_d2 in range(n_dofs):
+                                constraint_state.jac[i_con, i_d2, i_b] = gs.qd_float(0.0)
+                            constraint_state.jac[i_con, i_d, i_b] = jac
 
 
 # ====================================== Runtime User-Specified Weld Constraints ======================================
@@ -1426,8 +1463,8 @@ def func_hessian_direct_batch(
     """
     EPS = rigid_global_info.EPS[None]
 
-    n_dofs = constraint_state.nt_H.shape[1]
-    n_entities = entities_info.n_links.shape[0]
+    n_dofs = static_rigid_sim_config.n_dofs_
+    n_entities = static_rigid_sim_config.n_entities_
 
     # Reset Hessian matrix to zero
     for i_d1 in range(n_dofs):
@@ -1487,8 +1524,8 @@ def func_hessian_direct_tiled(
 
     Note that only the lower triangular part will be updated for efficiency, because the Hessian matrix is symmetric.
     """
-    _B = constraint_state.grad.shape[1]
-    n_dofs = constraint_state.nt_H.shape[1]
+    _B = static_rigid_sim_config.n_envs
+    n_dofs = static_rigid_sim_config.n_dofs_
 
     # BLOCK_DIM = 128 is optimal, after grid searching ofter block_dim = 64, 128, 256, and evaluating
     # the test_rigid_benchmarks.py in production.yml for each value.
@@ -1611,7 +1648,7 @@ def func_cholesky_factor_direct_batch(
     """
     EPS = rigid_global_info.EPS[None]
 
-    n_dofs = constraint_state.nt_H.shape[1]
+    n_dofs = static_rigid_sim_config.n_dofs_
 
     for i_d in range(n_dofs):
         tmp = constraint_state.nt_H[i_b, i_d, i_d]
@@ -1647,8 +1684,8 @@ def func_cholesky_factor_direct_tiled(
     """
     EPS = rigid_global_info.EPS[None]
 
-    _B = constraint_state.grad.shape[1]
-    n_dofs = constraint_state.nt_H.shape[1]
+    _B = static_rigid_sim_config.n_envs
+    n_dofs = static_rigid_sim_config.n_dofs_
 
     # Performance is optimal for BLOCK_DIM = 64
     BLOCK_DIM = qd.static(64)
@@ -1737,7 +1774,7 @@ def func_hessian_and_cholesky_factor_direct(
     Note that the sparse implementation has not been optimized using tiling for now, mainly it is largely designed to
     target CPU rather than GPU backend. In any event, its advantage over the dense implementation is still not clear.
     """
-    _B = constraint_state.jac.shape[2]
+    _B = static_rigid_sim_config.n_envs
 
     if qd.static(static_rigid_sim_config.backend == gs.cpu or static_rigid_sim_config.sparse_solve):
         # CPU
@@ -1788,7 +1825,7 @@ def func_hessian_and_cholesky_factor_incremental_dense_batch(
 ) -> bool:
     EPS = rigid_global_info.EPS[None]
 
-    n_dofs = constraint_state.nt_H.shape[1]
+    n_dofs = static_rigid_sim_config.n_dofs_
 
     is_degenerated = False
     for idx in range(constraint_state.incr_n_changed[i_b]):
@@ -1896,7 +1933,7 @@ def func_cholesky_solve_batch(
     i_b,
     constraint_state: array_class.ConstraintState,
 ):
-    n_dofs = constraint_state.Mgrad.shape[0]
+    n_dofs = static_rigid_sim_config.n_dofs_
 
     for i_d in range(n_dofs):
         curr_out = constraint_state.grad[i_d, i_b]
@@ -1937,8 +1974,8 @@ def func_cholesky_solve_tiled(
     WARP_SIZE = qd.static(32)
     NUM_WARPS = qd.static(BLOCK_DIM // WARP_SIZE)
 
-    _B = constraint_state.jac.shape[2]
-    n_dofs = constraint_state.jac.shape[1]
+    _B = static_rigid_sim_config.n_envs
+    n_dofs = static_rigid_sim_config.n_dofs_
     n_dofs_2 = n_dofs**2
 
     qd.loop_config(block_dim=BLOCK_DIM)
@@ -2051,8 +2088,8 @@ def func_ls_init_and_eval_p0_opt(
     compute utilization (0.40 FLOPs/byte, 147x below roofline), this trades negligible compute for eliminating 3 global
     memory writes per constraint during init and 3 reads per constraint in every subsequent evaluation call — a 40%
     bandwidth reduction for contacts (5→3 loads) and 29% for friction (7→5 loads) in the hottest loop."""
-    n_dofs = constraint_state.search.shape[0]
-    n_entities = entities_info.dof_start.shape[0]
+    n_dofs = static_rigid_sim_config.n_dofs_
+    n_entities = static_rigid_sim_config.n_entities_
     ne = constraint_state.n_constraints_equality[i_b]
     nef = ne + constraint_state.n_constraints_frictionloss[i_b]
     n_con = constraint_state.n_constraints[i_b]
@@ -2068,9 +2105,13 @@ def func_ls_init_and_eval_p0_opt(
     for i_c in range(n_con):
         jv = gs.qd_float(0.0)
         if qd.static(static_rigid_sim_config.sparse_solve):
+            # C4: read from compact (N_c, max_nz, B) storage instead of the
+            # dense (N_c, N_d, B) Jacobian — both load operands are now
+            # bounded by max_nz per row, shrinking the per-iter working set
+            # and improving L2 hit-rate on memory-latency-bound MI300X.
             for i_d_ in range(constraint_state.jac_n_relevant_dofs[i_c, i_b]):
                 i_d = constraint_state.jac_relevant_dofs[i_c, i_d_, i_b]
-                jv = jv + constraint_state.jac[i_c, i_d, i_b] * constraint_state.search[i_d, i_b]
+                jv = jv + constraint_state.jac_compact_values[i_c, i_d_, i_b] * constraint_state.search[i_d, i_b]
         else:
             for i_d in range(n_dofs):
                 jv = jv + constraint_state.jac[i_c, i_d, i_b] * constraint_state.search[i_d, i_b]
@@ -2407,7 +2448,7 @@ def func_linesearch_and_apply_alpha(
         constraint_state=constraint_state,
         static_rigid_sim_config=static_rigid_sim_config,
     )
-    n_dofs = constraint_state.qacc.shape[0]
+    n_dofs = static_rigid_sim_config.n_dofs_
     if qd.abs(alpha) < rigid_global_info.EPS[None]:
         constraint_state.improved[i_b] = False
     else:
@@ -2426,6 +2467,121 @@ def func_linesearch_and_apply_alpha(
 
 
 @qd.func
+def _func_linesearch_phase3_batch(
+    i_b,
+    gtol,
+    p0_cost,
+    p1_alpha,
+    p1_cost,
+    p1_deriv_0,
+    p1_deriv_1,
+    p2_alpha,
+    p2_cost,
+    p2_deriv_0,
+    p2_deriv_1,
+    constraint_state: array_class.ConstraintState,
+    rigid_global_info: array_class.RigidGlobalInfo,
+):
+    # B5: Phase 3 (refinement with batched 3-alpha evaluation) extracted from
+    # func_linesearch_batch. The narrow input list scopes Phase 1/2 locals
+    # (p0_alpha/deriv_*, snorm, scale, direction, p2update, done, ...) to
+    # before this call, narrowing the live-range graph the AMDGPU register
+    # allocator has to work with through the bracketing loop.
+    alpha_0 = p1_alpha - p1_deriv_0 / p1_deriv_1  # Newton from p1
+    alpha_1 = p1_alpha  # p2_next (= current p1)
+    alpha_2 = (p1_alpha + p2_alpha) * 0.5  # midpoint
+
+    res_alpha = gs.qd_float(0.0)
+    done = False
+
+    while constraint_state.ls_it[i_b] < rigid_global_info.ls_iterations[None]:
+        costs, grads, hess = func_ls_point_fn_3alphas_opt(
+            i_b, alpha_0, alpha_1, alpha_2, constraint_state, rigid_global_info
+        )
+        alphas = qd.Vector([alpha_0, alpha_1, alpha_2])
+
+        p1_next_alpha = alpha_0
+        p2_next_alpha = alpha_1
+
+        best_alpha = gs.qd_float(0.0)
+        best_cost = gs.qd_float(0.0)
+        best_found = False
+        for i in qd.static(range(3)):
+            if qd.abs(grads[i]) < gtol and (not best_found or costs[i] < best_cost):
+                best_alpha = alphas[i]
+                best_cost = costs[i]
+                best_found = True
+
+        if best_found:
+            res_alpha = best_alpha
+            done = True
+        else:
+            (
+                b1,
+                p1_alpha,
+                p1_cost,
+                p1_deriv_0,
+                p1_deriv_1,
+                p1_next_alpha,
+            ) = update_bracket_no_eval_local(
+                p1_alpha,
+                p1_cost,
+                p1_deriv_0,
+                p1_deriv_1,
+                alphas,
+                costs,
+                grads,
+                hess,
+            )
+            (
+                b2,
+                p2_alpha,
+                p2_cost,
+                p2_deriv_0,
+                p2_deriv_1,
+                p2_next_alpha,
+            ) = update_bracket_no_eval_local(
+                p2_alpha,
+                p2_cost,
+                p2_deriv_0,
+                p2_deriv_1,
+                alphas,
+                costs,
+                grads,
+                hess,
+            )
+
+            if b1 == 0 and b2 == 0:
+                if costs[2] < p0_cost:
+                    constraint_state.ls_result[i_b] = 0
+                else:
+                    constraint_state.ls_result[i_b] = 7
+                res_alpha = alpha_2
+                done = True
+
+        if done:
+            break
+
+        # Compute next 3 alphas for next iteration
+        alpha_0 = p1_next_alpha
+        alpha_1 = p2_next_alpha
+        alpha_2 = (p1_alpha + p2_alpha) * 0.5
+
+    if not done:
+        if p1_cost <= p2_cost and p1_cost < p0_cost:
+            constraint_state.ls_result[i_b] = 4
+            res_alpha = p1_alpha
+        elif p2_cost <= p1_cost and p2_cost < p0_cost:
+            constraint_state.ls_result[i_b] = 4
+            res_alpha = p2_alpha
+        else:
+            constraint_state.ls_result[i_b] = 5
+            res_alpha = 0.0
+
+    return res_alpha
+
+
+@qd.func
 def func_linesearch_batch(
     i_b,
     entities_info: array_class.EntitiesInfo,
@@ -2434,7 +2590,7 @@ def func_linesearch_batch(
     constraint_state: array_class.ConstraintState,
     static_rigid_sim_config: qd.template(),
 ):
-    n_dofs = constraint_state.search.shape[0]
+    n_dofs = static_rigid_sim_config.n_dofs_
     ## use adaptive linesearch tolerance
     snorm = gs.qd_float(0.0)
     for jd in range(n_dofs):
@@ -2506,96 +2662,26 @@ def func_linesearch_batch(
                     done = True
 
                 if not done:
-                    # Phase 3: Refinement with batched 3-alpha evaluation
-                    alpha_0 = p1_alpha - p1_deriv_0 / p1_deriv_1  # Newton from p1
-                    alpha_1 = p1_alpha  # p2_next (= current p1)
-                    alpha_2 = (p1_alpha + p2_alpha) * 0.5  # midpoint
-
-                    while constraint_state.ls_it[i_b] < rigid_global_info.ls_iterations[None]:
-                        # Batch evaluate cost, gradient, hessian for all 3 alphas in one constraint loop
-                        costs, grads, hess = func_ls_point_fn_3alphas_opt(
-                            i_b, alpha_0, alpha_1, alpha_2, constraint_state, rigid_global_info
-                        )
-                        alphas = qd.Vector([alpha_0, alpha_1, alpha_2])
-
-                        # Check convergence among 3 candidates
-                        p1_next_alpha = alpha_0
-                        p2_next_alpha = alpha_1
-
-                        best_alpha = gs.qd_float(0.0)
-                        best_cost = gs.qd_float(0.0)
-                        best_found = False
-                        for i in qd.static(range(3)):
-                            if qd.abs(grads[i]) < gtol and (not best_found or costs[i] < best_cost):
-                                best_alpha = alphas[i]
-                                best_cost = costs[i]
-                                best_found = True
-
-                        if best_found:
-                            res_alpha = best_alpha
-                            done = True
-                        else:
-                            (
-                                b1,
-                                p1_alpha,
-                                p1_cost,
-                                p1_deriv_0,
-                                p1_deriv_1,
-                                p1_next_alpha,
-                            ) = update_bracket_no_eval_local(
-                                p1_alpha,
-                                p1_cost,
-                                p1_deriv_0,
-                                p1_deriv_1,
-                                alphas,
-                                costs,
-                                grads,
-                                hess,
-                            )
-                            (
-                                b2,
-                                p2_alpha,
-                                p2_cost,
-                                p2_deriv_0,
-                                p2_deriv_1,
-                                p2_next_alpha,
-                            ) = update_bracket_no_eval_local(
-                                p2_alpha,
-                                p2_cost,
-                                p2_deriv_0,
-                                p2_deriv_1,
-                                alphas,
-                                costs,
-                                grads,
-                                hess,
-                            )
-
-                            if b1 == 0 and b2 == 0:
-                                if costs[2] < p0_cost:
-                                    constraint_state.ls_result[i_b] = 0
-                                else:
-                                    constraint_state.ls_result[i_b] = 7
-                                res_alpha = alpha_2
-                                done = True
-
-                        if done:
-                            break
-
-                        # Compute next 3 alphas for next iteration
-                        alpha_0 = p1_next_alpha
-                        alpha_1 = p2_next_alpha
-                        alpha_2 = (p1_alpha + p2_alpha) * 0.5
-
-                    if not done:
-                        if p1_cost <= p2_cost and p1_cost < p0_cost:
-                            constraint_state.ls_result[i_b] = 4
-                            res_alpha = p1_alpha
-                        elif p2_cost <= p1_cost and p2_cost < p0_cost:
-                            constraint_state.ls_result[i_b] = 4
-                            res_alpha = p2_alpha
-                        else:
-                            constraint_state.ls_result[i_b] = 5
-                            res_alpha = 0.0
+                    # B5: Phase 3 split into _func_linesearch_phase3_batch so
+                    # Phase 1/2 locals (p0_alpha/deriv, snorm, scale, direction,
+                    # p2update, done, ...) end their live ranges before the
+                    # call site, shrinking the AMDGPU register-pressure footprint
+                    # of the bracketing loop body.
+                    res_alpha = _func_linesearch_phase3_batch(
+                        i_b,
+                        gtol,
+                        p0_cost,
+                        p1_alpha,
+                        p1_cost,
+                        p1_deriv_0,
+                        p1_deriv_1,
+                        p2_alpha,
+                        p2_cost,
+                        p2_deriv_0,
+                        p2_deriv_1,
+                        constraint_state,
+                        rigid_global_info,
+                    )
     return res_alpha
 
 
@@ -2612,7 +2698,7 @@ def func_save_prev_grad(
     i_b,
     constraint_state: array_class.ConstraintState,
 ):
-    n_dofs = constraint_state.qacc.shape[0]
+    n_dofs = static_rigid_sim_config.n_dofs_
     for i_d in range(n_dofs):
         constraint_state.cg_prev_grad[i_d, i_b] = constraint_state.grad[i_d, i_b]
         constraint_state.cg_prev_Mgrad[i_d, i_b] = constraint_state.Mgrad[i_d, i_b]
@@ -2628,7 +2714,7 @@ def func_update_constraint_batch(
     constraint_state: array_class.ConstraintState,
     static_rigid_sim_config: qd.template(),
 ):
-    n_dofs = constraint_state.qfrc_constraint.shape[0]
+    n_dofs = static_rigid_sim_config.n_dofs_
     ne = constraint_state.n_constraints_equality[i_b]
     nef = ne + constraint_state.n_constraints_frictionloss[i_b]
 
@@ -2665,11 +2751,13 @@ def func_update_constraint_batch(
         for i_d in range(n_dofs):
             constraint_state.qfrc_constraint[i_d, i_b] = gs.qd_float(0.0)
         for i_c in range(constraint_state.n_constraints[i_b]):
+            # C4: scatter-add J^T·efc_force using compact (N_c, max_nz, B)
+            # values; the dense jac is no longer touched here.
             for i_d_ in range(constraint_state.jac_n_relevant_dofs[i_c, i_b]):
                 i_d = constraint_state.jac_relevant_dofs[i_c, i_d_, i_b]
                 constraint_state.qfrc_constraint[i_d, i_b] = (
                     constraint_state.qfrc_constraint[i_d, i_b]
-                    + constraint_state.jac[i_c, i_d, i_b] * constraint_state.efc_force[i_c, i_b]
+                    + constraint_state.jac_compact_values[i_c, i_d_, i_b] * constraint_state.efc_force[i_c, i_b]
                 )
     else:
         for i_d in range(n_dofs):
@@ -2705,7 +2793,7 @@ def func_update_constraint(
     constraint_state: array_class.ConstraintState,
     static_rigid_sim_config: qd.template(),
 ):
-    _B = constraint_state.jac.shape[2]
+    _B = static_rigid_sim_config.n_envs
 
     qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
     for i_b in range(_B):
@@ -2729,7 +2817,7 @@ def func_update_gradient_batch(
     rigid_global_info: array_class.RigidGlobalInfo,
     static_rigid_sim_config: qd.template(),
 ):
-    n_dofs = constraint_state.grad.shape[0]
+    n_dofs = static_rigid_sim_config.n_dofs_
 
     for i_d in range(n_dofs):
         constraint_state.grad[i_d, i_b] = (
@@ -2760,8 +2848,8 @@ def func_update_gradient_tiled(
     rigid_global_info: array_class.RigidGlobalInfo,
     static_rigid_sim_config: qd.template(),
 ):
-    _B = constraint_state.jac.shape[2]
-    n_dofs = constraint_state.jac.shape[1]
+    _B = static_rigid_sim_config.n_envs
+    n_dofs = static_rigid_sim_config.n_dofs_
 
     # Compute Mgrad = H^{-1} @ grad, s.t. grad = M @ acc - q_force_ext - q_force_const
     qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
@@ -2808,7 +2896,7 @@ def func_update_gradient(
     code to configure the static global flag `enable_tiled_cholesky_hessian` accordingly. Failing to do so will cause
     the requested shared memory allocation to exceed 48kB and raise an exception.
     """
-    _B = constraint_state.jac.shape[2]
+    _B = static_rigid_sim_config.n_envs
 
     if qd.static(
         not static_rigid_sim_config.enable_tiled_cholesky_hessian or static_rigid_sim_config.backend == gs.cpu
@@ -2842,7 +2930,7 @@ def func_terminate_or_update_descent_batch(
     rigid_global_info: array_class.RigidGlobalInfo,
     static_rigid_sim_config: qd.template(),
 ):
-    n_dofs = constraint_state.jac.shape[1]
+    n_dofs = static_rigid_sim_config.n_dofs_
 
     # Check convergence, i.e. whether the cost function is not longer decreasing or the gradient is flat
     tol_scaled = (rigid_global_info.meaninertia[i_b] * qd.max(1, n_dofs)) * rigid_global_info.tolerance[None]
@@ -2887,17 +2975,19 @@ def initialize_Jaref(
     constraint_state: array_class.ConstraintState,
     static_rigid_sim_config: qd.template(),
 ):
-    _B = constraint_state.jac.shape[2]
-    n_dofs = constraint_state.jac.shape[1]
+    _B = static_rigid_sim_config.n_envs
+    n_dofs = static_rigid_sim_config.n_dofs_
 
     qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
     for i_b in range(_B):
         for i_c in range(constraint_state.n_constraints[i_b]):
             Jaref = -constraint_state.aref[i_c, i_b]
             if qd.static(static_rigid_sim_config.sparse_solve):
+                # C4: read from compact storage; per-row working set is
+                # bounded by jac_n_relevant_dofs (≤ max_nz) instead of N_d.
                 for i_d_ in range(constraint_state.jac_n_relevant_dofs[i_c, i_b]):
                     i_d = constraint_state.jac_relevant_dofs[i_c, i_d_, i_b]
-                    Jaref = Jaref + constraint_state.jac[i_c, i_d, i_b] * qacc[i_d, i_b]
+                    Jaref = Jaref + constraint_state.jac_compact_values[i_c, i_d_, i_b] * qacc[i_d, i_b]
             else:
                 for i_d in range(n_dofs):
                     Jaref = Jaref + constraint_state.jac[i_c, i_d, i_b] * qacc[i_d, i_b]
@@ -2913,8 +3003,8 @@ def initialize_Ma(
     rigid_global_info: array_class.RigidGlobalInfo,
     static_rigid_sim_config: qd.template(),
 ):
-    _B = rigid_global_info.mass_mat.shape[2]
-    n_dofs = qacc.shape[0]
+    _B = static_rigid_sim_config.n_envs
+    n_dofs = static_rigid_sim_config.n_dofs_
 
     qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL))
     for i_d1, i_b in qd.ndrange(n_dofs, _B):
@@ -2938,8 +3028,8 @@ def func_solve_init(
     rigid_global_info: array_class.RigidGlobalInfo,
     static_rigid_sim_config: qd.template(),
 ):
-    _B = dofs_state.acc_smooth.shape[1]
-    n_dofs = dofs_state.acc_smooth.shape[0]
+    _B = static_rigid_sim_config.n_envs
+    n_dofs = static_rigid_sim_config.n_dofs_
 
     if qd.static(static_rigid_sim_config.enable_mujoco_compatibility):
         # Compute cost for warmstart state (i.e. acceleration at previous timestep)
@@ -3065,7 +3155,7 @@ def func_solve_iter(
     constraint_state: array_class.ConstraintState,
     static_rigid_sim_config: qd.template(),
 ):
-    n_dofs = constraint_state.qacc.shape[0]
+    n_dofs = static_rigid_sim_config.n_dofs_
     alpha = func_linesearch_batch(
         i_b,
         entities_info=entities_info,
@@ -3136,6 +3226,74 @@ def func_solve_iter(
         )
 
 
+@qd.func
+def func_solve_iter_post_linesearch(
+    i_b,
+    entities_info: array_class.EntitiesInfo,
+    dofs_state: array_class.DofsState,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    constraint_state: array_class.ConstraintState,
+    static_rigid_sim_config: qd.template(),
+):
+    # B3: everything in func_solve_iter that runs *after* the linesearch +
+    # apply-alpha step. Used by the AMDGPU "split" variant in solver_amdgpu.py
+    # so the linesearch can be hoisted into its own kernel and this body
+    # (Hessian + Cholesky + gradient + terminate) compiles separately with
+    # its own, smaller live-range graph.
+    #
+    # Caller is responsible for guarding on `constraint_state.improved[i_b]`
+    # (i.e. only invoke this for batches where the previous linesearch
+    # produced a non-degenerate alpha).
+    if qd.static(static_rigid_sim_config.solver_type == gs.constraint_solver.CG):
+        n_dofs = static_rigid_sim_config.n_dofs_
+        for i_d in range(n_dofs):
+            constraint_state.cg_prev_grad[i_d, i_b] = constraint_state.grad[i_d, i_b]
+            constraint_state.cg_prev_Mgrad[i_d, i_b] = constraint_state.Mgrad[i_d, i_b]
+
+    func_update_constraint_batch(
+        i_b,
+        qacc=constraint_state.qacc,
+        Ma=constraint_state.Ma,
+        cost=constraint_state.cost,
+        dofs_state=dofs_state,
+        constraint_state=constraint_state,
+        static_rigid_sim_config=static_rigid_sim_config,
+    )
+
+    if qd.static(static_rigid_sim_config.solver_type == gs.constraint_solver.Newton):
+        func_build_changed_constraint_list(i_b, constraint_state=constraint_state)
+        is_degenerated = func_hessian_and_cholesky_factor_incremental_batch(
+            i_b,
+            constraint_state=constraint_state,
+            rigid_global_info=rigid_global_info,
+            static_rigid_sim_config=static_rigid_sim_config,
+        )
+        if is_degenerated:
+            func_hessian_and_cholesky_factor_direct_batch(
+                i_b,
+                entities_info=entities_info,
+                constraint_state=constraint_state,
+                rigid_global_info=rigid_global_info,
+                static_rigid_sim_config=static_rigid_sim_config,
+            )
+
+    func_update_gradient_batch(
+        i_b,
+        dofs_state=dofs_state,
+        entities_info=entities_info,
+        rigid_global_info=rigid_global_info,
+        constraint_state=constraint_state,
+        static_rigid_sim_config=static_rigid_sim_config,
+    )
+
+    func_terminate_or_update_descent_batch(
+        i_b,
+        constraint_state=constraint_state,
+        rigid_global_info=rigid_global_info,
+        static_rigid_sim_config=static_rigid_sim_config,
+    )
+
+
 @qd.perf_dispatch(
     get_geometry_hash=lambda *args, **kwargs: (*args, frozendict(kwargs)), warmup=1, active=1, repeat_after_seconds=5
 )
@@ -3159,9 +3317,15 @@ def func_solve_body_monolith(
     static_rigid_sim_config: qd.template(),
     _n_iterations: int,
 ):
-    _B = constraint_state.grad.shape[1]
+    _B = static_rigid_sim_config.n_envs
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, block_dim=32)
+    # block_dim=32 was tuned for CUDA wave32 hardware; on AMDGPU (wave64) a 32-thread
+    # workgroup leaves 32 of 64 lanes EXEC-masked off, capping VALU lane utilization at 50%.
+    # Counter measurements on MI300X showed VALUUtilization pinned at 49.9% from this alone.
+    qd.loop_config(
+        serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL,
+        block_dim=64 if gs.backend == gs.amdgpu else 32,
+    )
     for i_b in range(_B):
         if constraint_state.n_constraints[i_b] > 0:
             for _ in range(rigid_global_info.iterations[None]):
@@ -3191,8 +3355,8 @@ def func_update_contact_force(
     constraint_state: array_class.ConstraintState,
     static_rigid_sim_config: qd.template(),
 ):
-    n_links = links_state.contact_force.shape[0]
-    _B = links_state.contact_force.shape[1]
+    n_links = static_rigid_sim_config.n_links_
+    _B = static_rigid_sim_config.n_envs
 
     qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
     for i_l, i_b in qd.ndrange(n_links, _B):
@@ -3233,8 +3397,8 @@ def func_update_qacc(
     static_rigid_sim_config: qd.template(),
     errno: array_class.V_ANNOTATION,
 ):
-    n_dofs = dofs_state.acc.shape[0]
-    _B = dofs_state.acc.shape[1]
+    n_dofs = static_rigid_sim_config.n_dofs_
+    _B = static_rigid_sim_config.n_envs
 
     qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
     for i_d, i_b in qd.ndrange(n_dofs, _B):
