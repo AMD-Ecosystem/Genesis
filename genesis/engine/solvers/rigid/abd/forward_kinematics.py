@@ -1442,8 +1442,8 @@ def func_forward_velocity_entity(
                                 dofs_state.cdofd_ang[dof_start + i_3 + 3, i_b],
                                 dofs_state.cdofd_vel[dof_start + i_3 + 3, i_b],
                             ) = gu.motion_cross_motion(
-                                R(links_state.cd_ang_bw, curr_I, cvel_ang, BW),
-                                R(links_state.cd_vel_bw, curr_I, cvel_vel, BW),
+                                ang_curr,
+                                vel_curr,
                                 dofs_state.cdof_ang[dof_start + i_3 + 3, i_b],
                                 dofs_state.cdof_vel[dof_start + i_3 + 3, i_b],
                             )
