@@ -196,7 +196,6 @@ def func_broad_phase(
             collider_state.first_time[i_b] = False
 
         else:
-            # warm start. If `use_hibernation=True`, it's already updated in rigid_solver.
             if qd.static(not static_rigid_sim_config.use_hibernation):
                 for i in range(env_n_geoms * 2):
                     if collider_state.sort_buffer.is_max[i, i_b]:
@@ -247,7 +246,6 @@ def func_broad_phase(
                 is_max = collider_state.sort_buffer.is_max[i, i_b]
 
                 if not is_max:
-                    
                     min_b0 = geoms_state.aabb_min[i_g, i_b][0]
                     min_b1 = geoms_state.aabb_min[i_g, i_b][1]
                     min_b2 = geoms_state.aabb_min[i_g, i_b][2]
@@ -255,16 +253,22 @@ def func_broad_phase(
                     max_b1 = geoms_state.aabb_max[i_g, i_b][1]
                     max_b2 = geoms_state.aabb_max[i_g, i_b][2]
 
-                    
                     for j in range(n_active):
                         i_ga = collider_state.active_buffer[j, i_b]
 
-                        # 1. CHEAPEST: axis overlap (SAP guarantees min overlaps, check max)
+                        i_ga_c = i_ga
+                        i_gb_c = i_g
+                        if i_ga > i_g:
+                            i_ga_c = i_g
+                            i_gb_c = i_ga
+
+                        if collider_info.collision_pair_idx[i_ga_c, i_gb_c] == -1:
+                            continue
+
                         max_a_axis = geoms_state.aabb_max[i_ga, i_b][axis]
                         if max_a_axis < min_b0:  # axis=0, so min_b0
                             continue
 
-                        
                         min_a0 = geoms_state.aabb_min[i_ga, i_b][0]
                         max_a0 = geoms_state.aabb_max[i_ga, i_b][0]
                         min_a1 = geoms_state.aabb_min[i_ga, i_b][1]
@@ -275,25 +279,9 @@ def func_broad_phase(
                         if not (min_a0 <= max_b0 and max_a0 >= min_b0 and
                                 min_a1 <= max_b1 and max_a1 >= min_b1 and
                                 min_a2 <= max_b2 and max_a2 >= min_b2):
-                            if qd.static(not static_rigid_sim_config.enable_mujoco_compatibility):
-                                # canonical ordering for pair idx lookup
-                                i_ga_p = i_ga
-                                i_gb_p = i_g
-                                if i_ga > i_g:
-                                    i_ga_p = i_g
-                                    i_gb_p = i_ga
-                                i_pair = collider_info.collision_pair_idx[i_ga_p, i_gb_p]
-                                collider_state.contact_cache.normal[i_pair, i_b] = qd.Vector.zero(gs.qd_float, 3)
+
                             continue
 
-                        
-                        i_ga_c = i_ga
-                        i_gb_c = i_g
-                        if i_ga > i_g:
-                            i_ga_c = i_g
-                            i_gb_c = i_ga
-
-                        
                         if not func_check_collision_valid(
                             i_ga_c,
                             i_gb_c,
@@ -309,7 +297,6 @@ def func_broad_phase(
                         ):
                             continue
 
-                        # write result
                         if n_broad < collider_info.max_collision_pairs_broad[None]:
                             collider_state.broad_collision_pairs[n_broad, i_b][0] = i_ga_c
                             collider_state.broad_collision_pairs[n_broad, i_b][1] = i_gb_c
@@ -317,17 +304,18 @@ def func_broad_phase(
                         else:
                             errno[i_b] = errno[i_b] | array_class.ErrorCode.OVERFLOW_CANDIDATE_CONTACTS
 
-                    
                     collider_state.active_buffer[n_active, i_b] = i_g
+                    geoms_state.active_buffer_idx[i_g, i_b] = n_active
                     n_active += 1
 
                 else:
-                   
-                    for j in range(n_active):
-                        if collider_state.active_buffer[j, i_b] == i_g:
-                            collider_state.active_buffer[j, i_b] = collider_state.active_buffer[n_active - 1, i_b]
-                            n_active -= 1
-                            break
+                    j_remove = geoms_state.active_buffer_idx[i_g, i_b]
+                    if j_remove < n_active - 1:
+                        # Swap with last element
+                        i_g_last = collider_state.active_buffer[n_active - 1, i_b]
+                        collider_state.active_buffer[j_remove, i_b] = i_g_last
+                        geoms_state.active_buffer_idx[i_g_last, i_b] = j_remove
+                    n_active -= 1
 
             collider_state.n_broad_pairs[i_b] = n_broad
         else:
