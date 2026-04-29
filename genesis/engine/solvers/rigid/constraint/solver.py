@@ -25,16 +25,62 @@ from . import noslip as constraint_noslip
 # ndarray descriptor path would otherwise emit. This is safe because each iteration
 # of those outer loops is fully independent (no cross-iteration FP reduction).
 #
-# `n_dofs`, however, is intentionally still read as `<arr>.shape[0]` (a runtime value)
-# rather than `static_rigid_sim_config.n_dofs_`. The reason: many inner kernels do
-# `for i_d in range(n_dofs):` over reductions like `qacc[i_d] += search[i_d] * alpha`
-# or dot products. With `n_dofs` as a compile-time literal, the AMDGPU LLVM backend
-# fully unrolls these loops, which changes the order of (non-associative) FP additions
-# vs. the rolled runtime-bound loop. Over many sim steps this drift accumulates and
-# breaks tight-tolerance settled-pose tests (e.g. test_mesh_align: 0.053 rad/s vs.
-# 0.05 tol on dofs_velocity[3] after 400 steps). Keeping `n_dofs` runtime preserves
-# bit-exact compatibility with the CUDA baseline at the cost of one shape descriptor
-# read per kernel launch (negligible vs. the inner-loop work).
+# `n_dofs` is more nuanced: when read as a compile-time literal, the AMDGPU LLVM
+# backend fully unrolls inner `for i_d in range(n_dofs):` loops. With Genesis's
+# default fast_math=True (which sets LLVM `AllowReassoc()`, see
+# `quadrants/codegen/llvm/codegen_llvm.cpp`), the unrolled add sequence is then
+# free to be reassociated into a different summation tree (e.g. pairwise vs
+# left-leaning) than the rolled runtime-bound loop -- producing ~1e-5-scale
+# per-step FP drift on scalar reductions. Over 400 sim steps this accumulates
+# into ~0.003 rad/s, enough to push tight-tolerance settled-pose tests
+# (test_mesh_align) over their 0.05 rad/s tolerance.
+#
+# Whether a given function can use the literal depends on what its OWN body
+# does with `n_dofs` (callees have their own `n_dofs` parameter in a separate
+# variable scope, so the parent's literal does NOT propagate into the helper's
+# inner loops -- the helper's own `n_dofs = arr.shape[X]` keeps that loop
+# rolled regardless of the caller).
+#
+# * SAFE (literal `n_dofs = static_rigid_sim_config.n_dofs_`): functions whose
+#   `range(n_dofs)` / `qd.ndrange(n_dofs, ...)` loops only do element-wise work
+#   -- each iteration writes to a DISTINCT memory location indexed by the loop
+#   variable. Examples: `qacc[i_d] = 0.0`, `cg_prev_grad[i_d, i_b] = grad[i_d, i_b]`,
+#   `qacc[i_d, i_b] += search[i_d, i_b] * alpha`. No scalar accumulator across
+#   iterations means the unrolled fma chain is bit-equivalent to the rolled
+#   version. AMDGPU also enables FMA fusion unconditionally (see
+#   `runtime/amdgpu/jit_amdgpu.cpp` `AllowFPOpFusion::Fast`), so element-wise
+#   `x[i] += y[i] * a` fuses to fma() with the same operands either way.
+#
+#   16 sites in this file are SAFE: constraint_solver_kernel_{reset,clear,
+#   masked_clear}, add_collision_constraints, func_equality_{connect,joint},
+#   add_{joint_limit,frictionloss}_constraints, func_linesearch_and_apply_alpha,
+#   func_save_prev_grad, func_update_gradient_{batch,tiled}, func_solve_init,
+#   func_solve_iter, func_solve_iter_post_linesearch, func_update_qacc.
+#
+# * UNSAFE (runtime `n_dofs = <arr>.shape[X]`): functions whose OWN body has at
+#   least one `range(n_dofs)` loop that accumulates into a SCALAR or into a
+#   memory location not indexed by the loop variable. Examples:
+#     - `for jd in range(n_dofs): snorm += search[jd]**2`     (linesearch_batch)
+#     - `for jd in range(n_dofs): jv += jac[i_c, jd] * search[jd]`  (jv dot)
+#     - `for k in range(i_d): tmp -= L[i_d, k]**2`            (Cholesky factor)
+#     - `for j in range(i_d): out -= L[i_d, j] * Mgrad[j]`    (Cholesky solve)
+#     - `for i_d2 in range(...): nt_H[i_d1, i_d1] += jac*jac` (Hessian rank-k)
+#   Reading `n_dofs` from `<arr>.shape[X]` keeps the bound runtime-unknown, so
+#   LLVM cannot unroll and the FP add order is preserved bit-exactly across
+#   rolled iterations.
+#
+#   14 sites in this file are UNSAFE: func_equality_weld, all func_hessian_*,
+#   all func_cholesky_*, func_ls_init_and_eval_p0_opt, func_linesearch_batch,
+#   func_update_constraint_batch, func_terminate_or_update_descent_batch,
+#   initialize_Jaref, initialize_Ma. Plus the two kernels in solver_breakdown.py
+#   (_kernel_update_constraint_qfrc/_cost) which sum jac^T*efc and gauss/cost.
+#
+# When adding a new helper or kernel here, check ITS OWN body's `range(n_dofs)`
+# loops for scalar accumulators before choosing between the literal and runtime
+# read. Verified by test_mesh_align (sub-0.05 rad/s tol on dofs_velocity[3]
+# after 400 sim steps with G1 robot) and a benchmark median of 806k env-steps/s
+# on MI300X (vs 763k for the all-runtime baseline -- recovering ~5.6% of
+# throughput while staying bit-exact with the CUDA baseline).
 
 
 @qd.func
@@ -549,7 +595,7 @@ def constraint_solver_kernel_reset(
     constraint_state: array_class.ConstraintState,
     static_rigid_sim_config: qd.template(),
 ):
-    n_dofs = constraint_state.qacc_ws.shape[0]
+    n_dofs = static_rigid_sim_config.n_dofs_
 
     qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
     for i_b_ in range(envs_idx.shape[0]):
@@ -586,7 +632,7 @@ def constraint_solver_kernel_clear(
     rigid_global_info: array_class.RigidGlobalInfo,
     static_rigid_sim_config: qd.template(),
 ):
-    n_dofs = constraint_state.qacc_ws.shape[0]
+    n_dofs = static_rigid_sim_config.n_dofs_
     len_constraints = constraint_state.jac.shape[0]
 
     qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
@@ -604,7 +650,7 @@ def constraint_solver_kernel_masked_clear(
     rigid_global_info: array_class.RigidGlobalInfo,
     static_rigid_sim_config: qd.template(),
 ):
-    n_dofs = constraint_state.qacc_ws.shape[0]
+    n_dofs = static_rigid_sim_config.n_dofs_
     len_constraints = constraint_state.jac.shape[0]
 
     for i_b in range(envs_mask.shape[0]):
@@ -630,7 +676,7 @@ def add_collision_constraints(
     EPS = rigid_global_info.EPS[None]
 
     _B = static_rigid_sim_config.n_envs
-    n_dofs = dofs_state.ctrl_mode.shape[0]
+    n_dofs = static_rigid_sim_config.n_dofs_
     max_contact_pairs = collider_state.contact_data.link_a.shape[0]
 
     qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
@@ -750,7 +796,7 @@ def func_equality_connect(
 ):
     EPS = rigid_global_info.EPS[None]
 
-    n_dofs = dofs_state.ctrl_mode.shape[0]
+    n_dofs = static_rigid_sim_config.n_dofs_
 
     link1_idx = equalities_info.eq_obj1id[i_e, i_b]
     link2_idx = equalities_info.eq_obj2id[i_e, i_b]
@@ -868,7 +914,7 @@ def func_equality_joint(
 ):
     EPS = rigid_global_info.EPS[None]
 
-    n_dofs = constraint_state.jac.shape[1]
+    n_dofs = static_rigid_sim_config.n_dofs_
 
     sol_params = equalities_info.sol_params[i_e, i_b]
 
@@ -1250,7 +1296,7 @@ def add_joint_limit_constraints(
 
     _B = static_rigid_sim_config.n_envs
     n_links = static_rigid_sim_config.n_links_
-    n_dofs = dofs_state.ctrl_mode.shape[0]
+    n_dofs = static_rigid_sim_config.n_dofs_
 
     # TODO: sparse mode
     qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
@@ -1311,7 +1357,7 @@ def add_frictionloss_constraints(
 
     _B = static_rigid_sim_config.n_envs
     n_links = static_rigid_sim_config.n_links_
-    n_dofs = dofs_state.ctrl_mode.shape[0]
+    n_dofs = static_rigid_sim_config.n_dofs_
 
     # TODO: sparse mode
     # FIXME: The condition `if dofs_info.frictionloss[I_d] > EPS:` is not correctly evaluated on Apple Metal
@@ -1532,6 +1578,7 @@ def func_hessian_direct_batch(
 def func_hessian_direct_tiled(
     constraint_state: array_class.ConstraintState,
     rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: qd.template(),
 ):
     """Compute the Hessian matrix `H = M + J.T @ D @ J of the optimization problem for all environment at once.
 
@@ -1809,7 +1856,7 @@ def func_hessian_and_cholesky_factor_direct(
             )
     else:
         # GPU
-        func_hessian_direct_tiled(constraint_state, rigid_global_info)
+        func_hessian_direct_tiled(constraint_state, rigid_global_info, static_rigid_sim_config)
 
         if qd.static(static_rigid_sim_config.enable_tiled_cholesky_hessian):
             func_cholesky_factor_direct_tiled(constraint_state, rigid_global_info, static_rigid_sim_config)
@@ -2468,7 +2515,7 @@ def func_linesearch_and_apply_alpha(
         constraint_state=constraint_state,
         static_rigid_sim_config=static_rigid_sim_config,
     )
-    n_dofs = constraint_state.qacc.shape[0]
+    n_dofs = static_rigid_sim_config.n_dofs_
     if qd.abs(alpha) < rigid_global_info.EPS[None]:
         constraint_state.improved[i_b] = False
     else:
@@ -2717,8 +2764,9 @@ def func_linesearch_batch(
 def func_save_prev_grad(
     i_b,
     constraint_state: array_class.ConstraintState,
+    static_rigid_sim_config: qd.template(),
 ):
-    n_dofs = constraint_state.qacc.shape[0]
+    n_dofs = static_rigid_sim_config.n_dofs_
     for i_d in range(n_dofs):
         constraint_state.cg_prev_grad[i_d, i_b] = constraint_state.grad[i_d, i_b]
         constraint_state.cg_prev_Mgrad[i_d, i_b] = constraint_state.Mgrad[i_d, i_b]
@@ -2837,7 +2885,7 @@ def func_update_gradient_batch(
     rigid_global_info: array_class.RigidGlobalInfo,
     static_rigid_sim_config: qd.template(),
 ):
-    n_dofs = constraint_state.grad.shape[0]
+    n_dofs = static_rigid_sim_config.n_dofs_
 
     for i_d in range(n_dofs):
         constraint_state.grad[i_d, i_b] = (
@@ -2869,7 +2917,7 @@ def func_update_gradient_tiled(
     static_rigid_sim_config: qd.template(),
 ):
     _B = static_rigid_sim_config.n_envs
-    n_dofs = constraint_state.jac.shape[1]
+    n_dofs = static_rigid_sim_config.n_dofs_
 
     # Compute Mgrad = H^{-1} @ grad, s.t. grad = M @ acc - q_force_ext - q_force_const
     qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
@@ -3049,7 +3097,7 @@ def func_solve_init(
     static_rigid_sim_config: qd.template(),
 ):
     _B = static_rigid_sim_config.n_envs
-    n_dofs = dofs_state.acc_smooth.shape[0]
+    n_dofs = static_rigid_sim_config.n_dofs_
 
     if qd.static(static_rigid_sim_config.enable_mujoco_compatibility):
         # Compute cost for warmstart state (i.e. acceleration at previous timestep)
@@ -3175,7 +3223,7 @@ def func_solve_iter(
     constraint_state: array_class.ConstraintState,
     static_rigid_sim_config: qd.template(),
 ):
-    n_dofs = constraint_state.qacc.shape[0]
+    n_dofs = static_rigid_sim_config.n_dofs_
     alpha = func_linesearch_batch(
         i_b,
         entities_info=entities_info,
@@ -3265,7 +3313,7 @@ def func_solve_iter_post_linesearch(
     # (i.e. only invoke this for batches where the previous linesearch
     # produced a non-degenerate alpha).
     if qd.static(static_rigid_sim_config.solver_type == gs.constraint_solver.CG):
-        n_dofs = constraint_state.qacc.shape[0]
+        n_dofs = static_rigid_sim_config.n_dofs_
         for i_d in range(n_dofs):
             constraint_state.cg_prev_grad[i_d, i_b] = constraint_state.grad[i_d, i_b]
             constraint_state.cg_prev_Mgrad[i_d, i_b] = constraint_state.Mgrad[i_d, i_b]
@@ -3417,7 +3465,7 @@ def func_update_qacc(
     static_rigid_sim_config: qd.template(),
     errno: array_class.V_ANNOTATION,
 ):
-    n_dofs = dofs_state.acc.shape[0]
+    n_dofs = static_rigid_sim_config.n_dofs_
     _B = static_rigid_sim_config.n_envs
 
     qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
