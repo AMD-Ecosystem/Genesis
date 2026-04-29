@@ -824,12 +824,14 @@ def kernel_bit_reduction_into(
     tensor: array_class.V_ANNOTATION,
     out: array_class.V_ANNOTATION,
     slot: qd.i32,
+    gen: qd.i32,
 ):
-    # Used by the AMDGPU deferred check_errno path.
     flag = qd.i32(0)
     for i in range(tensor.shape[0]):
         flag = qd.atomic_or(flag, tensor[i])
-    out[slot] = flag
+    s = slot & 1
+    out[s, 1] = flag
+    out[s, 0] = gen
 
 
 @qd.kernel(fastcache=gs.use_fastcache)
