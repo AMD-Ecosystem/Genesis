@@ -321,7 +321,7 @@ def func_broad_phase_lds(
                                     equalities_info,
                                     collider_info,
                                 ):
-                                    i_pair = collider_info.collision_pair_idx[i_ga, i_gb]
+                                    i_pair = collider_info.collision_pair_idx[i_ga_c, i_gb_c]
                                     collider_state.contact_cache.normal[i_pair, i_b] = qd.Vector.zero(gs.qd_float, 3)
 
                             continue
@@ -645,7 +645,7 @@ def func_broad_phase_global_mem(
                                     equalities_info,
                                     collider_info,
                                 ):
-                                    i_pair = collider_info.collision_pair_idx[i_ga, i_gb]
+                                    i_pair = collider_info.collision_pair_idx[i_ga_c, i_gb_c]
                                     collider_state.contact_cache.normal[i_pair, i_b] = qd.Vector.zero(gs.qd_float, 3)
                             continue
 
