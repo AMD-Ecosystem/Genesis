@@ -218,9 +218,6 @@ class Simulator(RBC):
         self._sensor_manager.build()
 
     def destroy(self):
-        # Drain any pending deferred-errno snapshot
-        if self.rigid_solver.is_active:
-            self.rigid_solver.flush_errno()
         self._sensor_manager.destroy()
 
     def reset(self, state: SimState, envs_idx=None):
@@ -299,10 +296,6 @@ class Simulator(RBC):
         self._sensor_manager.step()
 
     def _step_grad(self):
-        # Drain any pending deferred-errno snapshot from the forward pass before running backward.
-        if self.rigid_solver.is_active:
-            self.rigid_solver.flush_errno()
-
         for _ in range(self._substeps - 1, -1, -1):
             if self.cur_substep_local == 0:
                 self.load_ckpt()
