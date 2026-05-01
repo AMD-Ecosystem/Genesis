@@ -317,7 +317,12 @@ class Collider:
             self._contact0_mpr_state = array_class.get_mpr_state(self._contact0_grid_size)
             self._contact0_gjk_state = array_class.get_gjk_state_contact_only(self._contact0_grid_size)
 
-            self._multicontact_n_total_threads = gpu_cores
+            # AMD-specific optimization (#41): the multicontact narrowphase kernel scales better with a
+            # higher thread multiplier on ROCm/MI300X. Use 256 threads per CU (4x the default 64).
+            if torch.version.hip:
+                self._multicontact_n_total_threads = gpu_cores * 4
+            else:
+                self._multicontact_n_total_threads = gpu_cores
             self._multicontact_max_items_per_thread = cores_per_unit
             self._multicontact_mpr_state = array_class.get_mpr_state(self._multicontact_n_total_threads)
 
