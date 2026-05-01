@@ -71,71 +71,68 @@ def func_check_collision_valid(
 
 
 @qd.func
-def func_collision_clear(
+def func_collision_clear_per_env(
+    i_b,
     links_state: array_class.LinksState,
     links_info: array_class.LinksInfo,
     collider_state: array_class.ColliderState,
     static_rigid_sim_config: qd.template(),
 ):
-    _B = collider_state.n_contacts.shape[0]
+    if qd.static(static_rigid_sim_config.use_hibernation):
+        collider_state.n_contacts_hibernated[i_b] = 0
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
-    for i_b in range(_B):
-        if qd.static(static_rigid_sim_config.use_hibernation):
-            collider_state.n_contacts_hibernated[i_b] = 0
-
-            # Advect hibernated contacts
-            for i_c in range(collider_state.n_contacts[i_b]):
-                i_la = collider_state.contact_data.link_a[i_c, i_b]
-                i_lb = collider_state.contact_data.link_b[i_c, i_b]
-                I_la = [i_la, i_b] if qd.static(static_rigid_sim_config.batch_links_info) else i_la
-                I_lb = [i_lb, i_b] if qd.static(static_rigid_sim_config.batch_links_info) else i_lb
-
-                # Pair of hibernated-fixed links -> hibernated contact
-                # TODO: we should also include hibernated-hibernated links and wake up the whole contact island
-                # once a new collision is detected
-                if (links_state.hibernated[i_la, i_b] and links_info.is_fixed[I_lb]) or (
-                    links_state.hibernated[i_lb, i_b] and links_info.is_fixed[I_la]
-                ):
-                    i_c_hibernated = collider_state.n_contacts_hibernated[i_b]
-                    if i_c != i_c_hibernated:
-                        # Copying all fields of class StructContactData individually
-                        # (fields mode doesn't support struct-level copy operations):
-                        # fmt: off
-                        collider_state.contact_data.geom_a[i_c_hibernated, i_b] = collider_state.contact_data.geom_a[i_c, i_b]
-                        collider_state.contact_data.geom_b[i_c_hibernated, i_b] = collider_state.contact_data.geom_b[i_c, i_b]
-                        collider_state.contact_data.penetration[i_c_hibernated, i_b] = collider_state.contact_data.penetration[i_c, i_b]
-                        collider_state.contact_data.normal[i_c_hibernated, i_b] = collider_state.contact_data.normal[i_c, i_b]
-                        collider_state.contact_data.pos[i_c_hibernated, i_b] = collider_state.contact_data.pos[i_c, i_b]
-                        collider_state.contact_data.friction[i_c_hibernated, i_b] = collider_state.contact_data.friction[i_c, i_b]
-                        collider_state.contact_data.sol_params[i_c_hibernated, i_b] = collider_state.contact_data.sol_params[i_c, i_b]
-                        collider_state.contact_data.force[i_c_hibernated, i_b] = collider_state.contact_data.force[i_c, i_b]
-                        collider_state.contact_data.link_a[i_c_hibernated, i_b] = collider_state.contact_data.link_a[i_c, i_b]
-                        collider_state.contact_data.link_b[i_c_hibernated, i_b] = collider_state.contact_data.link_b[i_c, i_b]
-                        # fmt: on
-                    collider_state.n_contacts_hibernated[i_b] = i_c_hibernated + 1
-
-        # Clear contacts: when hibernation is enabled, only clear non-hibernated contacts.
-        # The hibernated contacts (positions 0 to n_contacts_hibernated-1) were just advected and should be preserved.
+        # Advect hibernated contacts
         for i_c in range(collider_state.n_contacts[i_b]):
-            should_clear = True
-            if qd.static(static_rigid_sim_config.use_hibernation):
-                # Only clear if this is not a hibernated contact
-                should_clear = i_c >= collider_state.n_contacts_hibernated[i_b]
-            if should_clear:
-                collider_state.contact_data.link_a[i_c, i_b] = -1
-                collider_state.contact_data.link_b[i_c, i_b] = -1
-                collider_state.contact_data.geom_a[i_c, i_b] = -1
-                collider_state.contact_data.geom_b[i_c, i_b] = -1
-                collider_state.contact_data.penetration[i_c, i_b] = 0.0
-                collider_state.contact_data.pos[i_c, i_b] = qd.Vector.zero(gs.qd_float, 3)
-                collider_state.contact_data.normal[i_c, i_b] = qd.Vector.zero(gs.qd_float, 3)
-                collider_state.contact_data.force[i_c, i_b] = qd.Vector.zero(gs.qd_float, 3)
+            i_la = collider_state.contact_data.link_a[i_c, i_b]
+            i_lb = collider_state.contact_data.link_b[i_c, i_b]
+            I_la = [i_la, i_b] if qd.static(static_rigid_sim_config.batch_links_info) else i_la
+            I_lb = [i_lb, i_b] if qd.static(static_rigid_sim_config.batch_links_info) else i_lb
 
+            # Pair of hibernated-fixed links -> hibernated contact
+            # TODO: we should also include hibernated-hibernated links and wake up the whole contact island
+            # once a new collision is detected
+            if (links_state.hibernated[i_la, i_b] and links_info.is_fixed[I_lb]) or (
+                links_state.hibernated[i_lb, i_b] and links_info.is_fixed[I_la]
+            ):
+                i_c_hibernated = collider_state.n_contacts_hibernated[i_b]
+                if i_c != i_c_hibernated:
+                    # Copying all fields of class StructContactData individually
+                    # (fields mode doesn't support struct-level copy operations):
+                    # fmt: off
+                    collider_state.contact_data.geom_a[i_c_hibernated, i_b] = collider_state.contact_data.geom_a[i_c, i_b]
+                    collider_state.contact_data.geom_b[i_c_hibernated, i_b] = collider_state.contact_data.geom_b[i_c, i_b]
+                    collider_state.contact_data.penetration[i_c_hibernated, i_b] = collider_state.contact_data.penetration[i_c, i_b]
+                    collider_state.contact_data.normal[i_c_hibernated, i_b] = collider_state.contact_data.normal[i_c, i_b]
+                    collider_state.contact_data.pos[i_c_hibernated, i_b] = collider_state.contact_data.pos[i_c, i_b]
+                    collider_state.contact_data.friction[i_c_hibernated, i_b] = collider_state.contact_data.friction[i_c, i_b]
+                    collider_state.contact_data.sol_params[i_c_hibernated, i_b] = collider_state.contact_data.sol_params[i_c, i_b]
+                    collider_state.contact_data.force[i_c_hibernated, i_b] = collider_state.contact_data.force[i_c, i_b]
+                    collider_state.contact_data.link_a[i_c_hibernated, i_b] = collider_state.contact_data.link_a[i_c, i_b]
+                    collider_state.contact_data.link_b[i_c_hibernated, i_b] = collider_state.contact_data.link_b[i_c, i_b]
+                    # fmt: on
+                collider_state.n_contacts_hibernated[i_b] = i_c_hibernated + 1
+
+    # Clear contacts: when hibernation is enabled, only clear non-hibernated contacts.
+    # The hibernated contacts (positions 0 to n_contacts_hibernated-1) were just advected and should be preserved.
+    for i_c in range(collider_state.n_contacts[i_b]):
+        should_clear = True
         if qd.static(static_rigid_sim_config.use_hibernation):
-            collider_state.n_contacts[i_b] = collider_state.n_contacts_hibernated[i_b]
-        else:
-            collider_state.n_contacts[i_b] = 0
+            # Only clear if this is not a hibernated contact
+            should_clear = i_c >= collider_state.n_contacts_hibernated[i_b]
+        if should_clear:
+            collider_state.contact_data.link_a[i_c, i_b] = -1
+            collider_state.contact_data.link_b[i_c, i_b] = -1
+            collider_state.contact_data.geom_a[i_c, i_b] = -1
+            collider_state.contact_data.geom_b[i_c, i_b] = -1
+            collider_state.contact_data.penetration[i_c, i_b] = 0.0
+            collider_state.contact_data.pos[i_c, i_b] = qd.Vector.zero(gs.qd_float, 3)
+            collider_state.contact_data.normal[i_c, i_b] = qd.Vector.zero(gs.qd_float, 3)
+            collider_state.contact_data.force[i_c, i_b] = qd.Vector.zero(gs.qd_float, 3)
+
+    if qd.static(static_rigid_sim_config.use_hibernation):
+        collider_state.n_contacts[i_b] = collider_state.n_contacts_hibernated[i_b]
+    else:
+        collider_state.n_contacts[i_b] = 0
 
 MAX_GEOMS_IN_LDS = 46
 
@@ -492,11 +489,10 @@ def func_broad_phase_global_mem(
     n_geoms, _B = collider_state.active_buffer.shape
     n_links = links_info.geom_start.shape[0]
 
-    # Clear collider state
-    func_collision_clear(links_state, links_info, collider_state, static_rigid_sim_config)
-
     qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
     for i_b in range(_B):
+        func_collision_clear_per_env(i_b, links_state, links_info, collider_state, static_rigid_sim_config)
+
         axis = 0
 
         # Calculate the number of active geoms for this environment

@@ -28,7 +28,6 @@ from . import support_field
 from .broadphase import (
     func_find_intersect_midpoint,
     func_check_collision_valid,
-    func_collision_clear,
     func_broad_phase,
 )
 
