@@ -507,6 +507,7 @@ def func_broad_phase_global_mem(
             env_n_geoms = env_n_geoms + links_info.geom_end[I_l] - links_info.geom_start[I_l]
 
         # copy updated geom aabbs to buffer for sorting
+        sort_is_sorted = False
         if collider_state.first_time[i_b]:
             i_buffer = 0
             for i_l in range(n_links):
@@ -529,44 +530,49 @@ def func_broad_phase_global_mem(
         else:
             # warm start. If `use_hibernation=True`, it's already updated in rigid_solver.
             if qd.static(not static_rigid_sim_config.use_hibernation):
+                sort_is_sorted = True
+                prev_sort_value = gs.qd_float(0.0)
                 for i in range(env_n_geoms * 2):
+                    updated_value = gs.qd_float(0.0)
                     if collider_state.sort_buffer.is_max[i, i_b]:
-                        collider_state.sort_buffer.value[i, i_b] = geoms_state.aabb_max[
-                            collider_state.sort_buffer.i_g[i, i_b], i_b
-                        ][axis]
+                        updated_value = geoms_state.aabb_max[collider_state.sort_buffer.i_g[i, i_b], i_b][axis]
                     else:
-                        collider_state.sort_buffer.value[i, i_b] = geoms_state.aabb_min[
-                            collider_state.sort_buffer.i_g[i, i_b], i_b
-                        ][axis]
+                        updated_value = geoms_state.aabb_min[collider_state.sort_buffer.i_g[i, i_b], i_b][axis]
+                    collider_state.sort_buffer.value[i, i_b] = updated_value
+                    if i > 0:
+                        if updated_value < prev_sort_value:
+                            sort_is_sorted = False
+                    prev_sort_value = updated_value
 
         # insertion sort, which has complexity near O(n) for nearly sorted array
-        for i in range(1, 2 * env_n_geoms):
-            key_value = collider_state.sort_buffer.value[i, i_b]
-            key_is_max = collider_state.sort_buffer.is_max[i, i_b]
-            key_i_g = collider_state.sort_buffer.i_g[i, i_b]
+        if not sort_is_sorted:
+            for i in range(1, 2 * env_n_geoms):
+                key_value = collider_state.sort_buffer.value[i, i_b]
+                key_is_max = collider_state.sort_buffer.is_max[i, i_b]
+                key_i_g = collider_state.sort_buffer.i_g[i, i_b]
 
-            j = i - 1
-            while j >= 0 and key_value < collider_state.sort_buffer.value[j, i_b]:
-                collider_state.sort_buffer.value[j + 1, i_b] = collider_state.sort_buffer.value[j, i_b]
-                collider_state.sort_buffer.is_max[j + 1, i_b] = collider_state.sort_buffer.is_max[j, i_b]
-                collider_state.sort_buffer.i_g[j + 1, i_b] = collider_state.sort_buffer.i_g[j, i_b]
+                j = i - 1
+                while j >= 0 and key_value < collider_state.sort_buffer.value[j, i_b]:
+                    collider_state.sort_buffer.value[j + 1, i_b] = collider_state.sort_buffer.value[j, i_b]
+                    collider_state.sort_buffer.is_max[j + 1, i_b] = collider_state.sort_buffer.is_max[j, i_b]
+                    collider_state.sort_buffer.i_g[j + 1, i_b] = collider_state.sort_buffer.i_g[j, i_b]
+
+                    if qd.static(static_rigid_sim_config.use_hibernation):
+                        if collider_state.sort_buffer.is_max[j, i_b]:
+                            geoms_state.max_buffer_idx[collider_state.sort_buffer.i_g[j, i_b], i_b] = j + 1
+                        else:
+                            geoms_state.min_buffer_idx[collider_state.sort_buffer.i_g[j, i_b], i_b] = j + 1
+
+                    j -= 1
+                collider_state.sort_buffer.value[j + 1, i_b] = key_value
+                collider_state.sort_buffer.is_max[j + 1, i_b] = key_is_max
+                collider_state.sort_buffer.i_g[j + 1, i_b] = key_i_g
 
                 if qd.static(static_rigid_sim_config.use_hibernation):
-                    if collider_state.sort_buffer.is_max[j, i_b]:
-                        geoms_state.max_buffer_idx[collider_state.sort_buffer.i_g[j, i_b], i_b] = j + 1
+                    if key_is_max:
+                        geoms_state.max_buffer_idx[key_i_g, i_b] = j + 1
                     else:
-                        geoms_state.min_buffer_idx[collider_state.sort_buffer.i_g[j, i_b], i_b] = j + 1
-
-                j -= 1
-            collider_state.sort_buffer.value[j + 1, i_b] = key_value
-            collider_state.sort_buffer.is_max[j + 1, i_b] = key_is_max
-            collider_state.sort_buffer.i_g[j + 1, i_b] = key_i_g
-
-            if qd.static(static_rigid_sim_config.use_hibernation):
-                if key_is_max:
-                    geoms_state.max_buffer_idx[key_i_g, i_b] = j + 1
-                else:
-                    geoms_state.min_buffer_idx[key_i_g, i_b] = j + 1
+                        geoms_state.min_buffer_idx[key_i_g, i_b] = j + 1
 
         # sweep over the sorted AABBs to find potential collision pairs
         n_broad = 0
@@ -594,23 +600,20 @@ def func_broad_phase_global_mem(
                             i_ga_c = i_g
                             i_gb_c = i_ga
 
-                        if collider_info.collision_pair_idx[i_ga_c, i_gb_c] == -1:
-                            continue
-
                         max_a_axis = geoms_state.aabb_max[i_ga, i_b][axis]
                         if max_a_axis < min_b0:  # axis=0, so min_b0
                             continue
 
-                        min_a0 = geoms_state.aabb_min[i_ga, i_b][0]
-                        max_a0 = geoms_state.aabb_max[i_ga, i_b][0]
                         min_a1 = geoms_state.aabb_min[i_ga, i_b][1]
                         max_a1 = geoms_state.aabb_max[i_ga, i_b][1]
                         min_a2 = geoms_state.aabb_min[i_ga, i_b][2]
                         max_a2 = geoms_state.aabb_max[i_ga, i_b][2]
 
-                        if not (min_a0 <= max_b0 and max_a0 >= min_b0 and
-                                min_a1 <= max_b1 and max_a1 >= min_b1 and
+                        if not (min_a1 <= max_b1 and max_a1 >= min_b1 and
                                 min_a2 <= max_b2 and max_a2 >= min_b2):
+                            continue
+
+                        if collider_info.collision_pair_idx[i_ga_c, i_gb_c] == -1:
                             continue
 
                         if not func_check_collision_valid(
