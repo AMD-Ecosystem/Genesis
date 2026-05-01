@@ -492,20 +492,51 @@ def get_diff_contact_input(_B, max_contacts_per_pair, is_active, requires_grad=F
     )
 
 
+# Maximum geom index supported by the i_g_packed encoding.
+# i_g_packed is u32 with layout [bits 1..31 = i_g | bit 0 = is_max], so the
+# encodable range is i_g in [0, 2**31 - 1]. Any scene with more geoms than
+# this would silently corrupt the is_max bit during packing; we assert
+# instead so the failure mode is loud at scene-build time, not silent at
+# runtime. Helper functions for pack/unpack live in broadphase.py
+# (func_pack_event / func_unpack_i_g / func_unpack_is_max).
+SORT_BUFFER_MAX_GEOMS = (1 << 31) - 1
+
+
 @DATA_ORIENTED
 class StructSortBuffer(metaclass=BASE_METACLASS):
+    """SAP sweep events for the broadphase, in two SoA streams:
+
+    * value      : fp32 sweep-axis position (read by the sort comparison).
+    * i_g_packed : u32 holding (i_g, is_max) bit-packed together.
+                   Layout: bit 0 = is_max, bits 1..31 = i_g.
+
+    The (i_g, is_max) packing reduces the SoA stream count from 3 to 2 in
+    the broadphase sort/sweep hot path. The unsigned dtype is deliberate:
+    it gives 31 bits to i_g (matching the original signed-i32 non-negative
+    range, ~2.1 B values) and makes `packed >> 1` an unambiguous logical
+    shift regardless of the high bit. The encoding/decoding logic lives
+    in broadphase.py helpers; do NOT touch i_g_packed directly without
+    going through those helpers.
+    """
     value: V_ANNOTATION
-    i_g: V_ANNOTATION
-    is_max: V_ANNOTATION
+    i_g_packed: V_ANNOTATION
 
 
 def get_sort_buffer(solver):
     _B = solver._B
 
+    # Guard against silent overflow of the (i_g << 1) | is_max packing.
+    # See SORT_BUFFER_MAX_GEOMS above for details. This is a host-side
+    # check at scene-build time -- zero runtime cost in the kernel.
+    assert solver.n_geoms_ <= SORT_BUFFER_MAX_GEOMS, (
+        f"Scene has {solver.n_geoms_} geoms but the broadphase sort_buffer "
+        f"i_g_packed encoding only supports up to {SORT_BUFFER_MAX_GEOMS}. "
+        f"Promote i_g_packed to qd.u64 in StructSortBuffer if you need more."
+    )
+
     return StructSortBuffer(
         value=V(dtype=gs.qd_float, shape=(2 * solver.n_geoms_, _B)),
-        i_g=V(dtype=gs.qd_int, shape=(2 * solver.n_geoms_, _B)),
-        is_max=V(dtype=gs.qd_bool, shape=(2 * solver.n_geoms_, _B)),
+        i_g_packed=V(dtype=qd.u32, shape=(2 * solver.n_geoms_, _B)),
     )
 
 

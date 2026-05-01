@@ -15,6 +15,41 @@ from .utils import (
 )
 
 
+# === sort_buffer.i_g_packed encoding helpers ================================
+# i_g_packed is a u32 (see StructSortBuffer in genesis/utils/array_class.py)
+# holding two fields per SAP event in a single word:
+#
+#     bit  0     : is_max   (0 = min/start event, 1 = max/end event)
+#     bits 1..31 : i_g      (geom index, supports up to 2**31 - 1)
+#
+# These three helpers are the single source of truth for the encoding. All
+# reads/writes of sort_buffer.i_g_packed in this file MUST go through them
+# rather than open-coding `<< 1` / `>> 1` / `& 1`. That way a future change
+# to the bit layout (e.g., promoting to u64, swapping which field is in the
+# low bits) is one edit, not thirty. Range overflow is guarded host-side at
+# scene-build in get_sort_buffer (see SORT_BUFFER_MAX_GEOMS).
+
+
+@qd.func
+def func_pack_event(i_g, is_max) -> qd.u32:
+    # Pack (i_g, is_max) into a single u32 word.
+    # is_max is coerced to {0, 1} via u32(...) so callers may pass a Python
+    # bool literal (True/False) or a runtime bool/int interchangeably.
+    return (qd.u32(i_g) << 1) | qd.u32(is_max)
+
+
+@qd.func
+def func_unpack_i_g(packed) -> qd.i32:
+    # Logical right shift on u32 (no sign extension) recovers i_g.
+    return qd.i32(packed >> 1)
+
+
+@qd.func
+def func_unpack_is_max(packed) -> gs.qd_bool:
+    # Bit 0 of the packed word holds is_max.
+    return (packed & 1) != 0
+
+
 @qd.func
 def func_find_intersect_midpoint(
     i_ga,
@@ -520,12 +555,10 @@ def func_broad_phase_global_mem(
                 I_l = [i_l, i_b] if qd.static(static_rigid_sim_config.batch_links_info) else i_l
                 for i_g in range(links_info.geom_start[I_l], links_info.geom_end[I_l]):
                     collider_state.sort_buffer.value[2 * i_buffer, i_b] = geoms_state.aabb_min[i_g, i_b][axis]
-                    collider_state.sort_buffer.i_g[2 * i_buffer, i_b] = i_g
-                    collider_state.sort_buffer.is_max[2 * i_buffer, i_b] = False
+                    collider_state.sort_buffer.i_g_packed[2 * i_buffer, i_b] = func_pack_event(i_g, False)
 
                     collider_state.sort_buffer.value[2 * i_buffer + 1, i_b] = geoms_state.aabb_max[i_g, i_b][axis]
-                    collider_state.sort_buffer.i_g[2 * i_buffer + 1, i_b] = i_g
-                    collider_state.sort_buffer.is_max[2 * i_buffer + 1, i_b] = True
+                    collider_state.sort_buffer.i_g_packed[2 * i_buffer + 1, i_b] = func_pack_event(i_g, True)
 
                     geoms_state.min_buffer_idx[i_buffer, i_b] = 2 * i_g
                     geoms_state.max_buffer_idx[i_buffer, i_b] = 2 * i_g + 1
@@ -537,39 +570,42 @@ def func_broad_phase_global_mem(
             # warm start. If `use_hibernation=True`, it's already updated in rigid_solver.
             if qd.static(not static_rigid_sim_config.use_hibernation):
                 for i in range(env_n_geoms * 2):
-                    if collider_state.sort_buffer.is_max[i, i_b]:
-                        collider_state.sort_buffer.value[i, i_b] = geoms_state.aabb_max[
-                            collider_state.sort_buffer.i_g[i, i_b], i_b
-                        ][axis]
+                    packed = collider_state.sort_buffer.i_g_packed[i, i_b]
+                    is_max = func_unpack_is_max(packed)
+                    i_g = func_unpack_i_g(packed)
+                    if is_max:
+                        collider_state.sort_buffer.value[i, i_b] = geoms_state.aabb_max[i_g, i_b][axis]
                     else:
-                        collider_state.sort_buffer.value[i, i_b] = geoms_state.aabb_min[
-                            collider_state.sort_buffer.i_g[i, i_b], i_b
-                        ][axis]
+                        collider_state.sort_buffer.value[i, i_b] = geoms_state.aabb_min[i_g, i_b][axis]
 
-        # insertion sort, which has complexity near O(n) for nearly sorted array
+        # insertion sort, which has complexity near O(n) for nearly sorted array.
+        # T1.3: i_g and is_max share a single i32 (bit 0 = is_max, bits 1+ = i_g)
+        # so the inner loop touches 2 SoA streams instead of 3.
         for i in range(1, 2 * env_n_geoms):
             key_value = collider_state.sort_buffer.value[i, i_b]
-            key_is_max = collider_state.sort_buffer.is_max[i, i_b]
-            key_i_g = collider_state.sort_buffer.i_g[i, i_b]
+            key_packed = collider_state.sort_buffer.i_g_packed[i, i_b]
 
             j = i - 1
             while j >= 0 and key_value < collider_state.sort_buffer.value[j, i_b]:
                 collider_state.sort_buffer.value[j + 1, i_b] = collider_state.sort_buffer.value[j, i_b]
-                collider_state.sort_buffer.is_max[j + 1, i_b] = collider_state.sort_buffer.is_max[j, i_b]
-                collider_state.sort_buffer.i_g[j + 1, i_b] = collider_state.sort_buffer.i_g[j, i_b]
+                slid_packed = collider_state.sort_buffer.i_g_packed[j, i_b]
+                collider_state.sort_buffer.i_g_packed[j + 1, i_b] = slid_packed
 
                 if qd.static(static_rigid_sim_config.use_hibernation):
-                    if collider_state.sort_buffer.is_max[j, i_b]:
-                        geoms_state.max_buffer_idx[collider_state.sort_buffer.i_g[j, i_b], i_b] = j + 1
+                    slid_i_g = func_unpack_i_g(slid_packed)
+                    slid_is_max = func_unpack_is_max(slid_packed)
+                    if slid_is_max:
+                        geoms_state.max_buffer_idx[slid_i_g, i_b] = j + 1
                     else:
-                        geoms_state.min_buffer_idx[collider_state.sort_buffer.i_g[j, i_b], i_b] = j + 1
+                        geoms_state.min_buffer_idx[slid_i_g, i_b] = j + 1
 
                 j -= 1
             collider_state.sort_buffer.value[j + 1, i_b] = key_value
-            collider_state.sort_buffer.is_max[j + 1, i_b] = key_is_max
-            collider_state.sort_buffer.i_g[j + 1, i_b] = key_i_g
+            collider_state.sort_buffer.i_g_packed[j + 1, i_b] = key_packed
 
             if qd.static(static_rigid_sim_config.use_hibernation):
+                key_i_g = func_unpack_i_g(key_packed)
+                key_is_max = func_unpack_is_max(key_packed)
                 if key_is_max:
                     geoms_state.max_buffer_idx[key_i_g, i_b] = j + 1
                 else:
@@ -581,8 +617,9 @@ def func_broad_phase_global_mem(
             n_active = 0
 
             for i in range(2 * env_n_geoms):
-                i_g = collider_state.sort_buffer.i_g[i, i_b]
-                is_max = collider_state.sort_buffer.is_max[i, i_b]
+                packed = collider_state.sort_buffer.i_g_packed[i, i_b]
+                i_g = func_unpack_i_g(packed)
+                is_max = func_unpack_is_max(packed)
 
                 if not is_max:
                     min_b0 = geoms_state.aabb_min[i_g, i_b][0]
@@ -663,13 +700,17 @@ def func_broad_phase_global_mem(
                 n_active_awake = 0
                 n_active_hib = 0
                 for i in range(2 * env_n_geoms):
-                    is_incoming_geom_hibernated = geoms_state.hibernated[collider_state.sort_buffer.i_g[i, i_b], i_b]
+                    # Single load of the packed event, decoded once per iteration via helpers.
+                    packed = collider_state.sort_buffer.i_g_packed[i, i_b]
+                    incoming_i_g = func_unpack_i_g(packed)
+                    incoming_is_max = func_unpack_is_max(packed)
+                    is_incoming_geom_hibernated = geoms_state.hibernated[incoming_i_g, i_b]
 
-                    if not collider_state.sort_buffer.is_max[i, i_b]:
+                    if not incoming_is_max:
                         # both awake and hibernated geom check with active awake geoms
                         for j in range(n_active_awake):
                             i_ga = collider_state.active_buffer_awake[j, i_b]
-                            i_gb = collider_state.sort_buffer.i_g[i, i_b]
+                            i_gb = incoming_i_g
                             if i_ga > i_gb:
                                 i_ga, i_gb = i_gb, i_ga
 
@@ -705,7 +746,7 @@ def func_broad_phase_global_mem(
                         if not is_incoming_geom_hibernated:
                             for j in range(n_active_hib):
                                 i_ga = collider_state.active_buffer_hib[j, i_b]
-                                i_gb = collider_state.sort_buffer.i_g[i, i_b]
+                                i_gb = incoming_i_g
                                 if i_ga > i_gb:
                                     i_ga, i_gb = i_gb, i_ga
 
@@ -737,15 +778,13 @@ def func_broad_phase_global_mem(
                                 n_broad = n_broad + 1
 
                         if is_incoming_geom_hibernated:
-                            collider_state.active_buffer_hib[n_active_hib, i_b] = collider_state.sort_buffer.i_g[i, i_b]
+                            collider_state.active_buffer_hib[n_active_hib, i_b] = incoming_i_g
                             n_active_hib = n_active_hib + 1
                         else:
-                            collider_state.active_buffer_awake[n_active_awake, i_b] = collider_state.sort_buffer.i_g[
-                                i, i_b
-                            ]
+                            collider_state.active_buffer_awake[n_active_awake, i_b] = incoming_i_g
                             n_active_awake = n_active_awake + 1
                     else:
-                        i_g_to_remove = collider_state.sort_buffer.i_g[i, i_b]
+                        i_g_to_remove = incoming_i_g
                         if is_incoming_geom_hibernated:
                             for j in range(n_active_hib):
                                 if collider_state.active_buffer_hib[j, i_b] == i_g_to_remove:
