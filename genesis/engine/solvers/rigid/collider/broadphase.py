@@ -34,6 +34,8 @@ def func_check_collision_valid(
     i_ga,
     i_gb,
     i_b,
+    n_eq_static,
+    n_eq_dyn,
     links_state: array_class.LinksState,
     links_info: array_class.LinksInfo,
     geoms_info: array_class.GeomsInfo,
@@ -49,8 +51,11 @@ def func_check_collision_valid(
         i_la = geoms_info.link_idx[i_ga]
         i_lb = geoms_info.link_idx[i_gb]
 
-        # Filter out collision pairs that are involved in dynamically registered weld equality constraints
-        for i_eq in range(rigid_global_info.n_equalities[None], constraint_state.qd_n_equalities[i_b]):
+        # Filter out collision pairs that are involved in dynamically registered weld equality constraints.
+        # Uses hoisted n_eq_static / n_eq_dyn so the per-pair scan avoids the scattered
+        # qd_n_equalities[i_b] load. When there are no dynamic equalities, the range is
+        # empty and the loop is a no-op.
+        for i_eq in range(n_eq_static, n_eq_dyn):
             if equalities_info.eq_type[i_eq, i_b] == gs.EQUALITY_TYPE.WELD:
                 i_leqa = equalities_info.eq_obj1id[i_eq, i_b]
                 i_leqb = equalities_info.eq_obj2id[i_eq, i_b]
@@ -493,6 +498,12 @@ def func_broad_phase_global_mem(
     for i_b in range(_B):
         func_collision_clear_per_env(i_b, links_state, links_info, collider_state, static_rigid_sim_config)
 
+        # Hoist equality bounds out of the per-pair func_check_collision_valid hot path.
+        # When n_eq_dyn == n_eq_static (the common case: no dynamic weld equalities), the
+        # per-pair check skips a scattered qd_n_equalities[i_b] load entirely.
+        n_eq_static = rigid_global_info.n_equalities[None]
+        n_eq_dyn = constraint_state.qd_n_equalities[i_b]
+
         axis = 0
 
         # Calculate the number of active geoms for this environment
@@ -613,6 +624,8 @@ def func_broad_phase_global_mem(
                             i_ga_c,
                             i_gb_c,
                             i_b,
+                            n_eq_static,
+                            n_eq_dyn,
                             links_state,
                             links_info,
                             geoms_info,
@@ -664,6 +677,8 @@ def func_broad_phase_global_mem(
                                 i_ga,
                                 i_gb,
                                 i_b,
+                                n_eq_static,
+                                n_eq_dyn,
                                 links_state,
                                 links_info,
                                 geoms_info,
@@ -698,6 +713,8 @@ def func_broad_phase_global_mem(
                                     i_ga,
                                     i_gb,
                                     i_b,
+                                    n_eq_static,
+                                    n_eq_dyn,
                                     links_state,
                                     links_info,
                                     geoms_info,
