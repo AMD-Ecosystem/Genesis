@@ -3109,6 +3109,8 @@ def func_update_constraint_batch(
     cost_i = gs.qd_float(0.0)
     gauss_i = gs.qd_float(0.0)
 
+    # Beware 'active' does not refer to whether a constraint is active, but rather whether its quadratic cost is active.
+    #
     # CSE Jaref_c, efc_D_c, active_c into locals so the AMDGPU backend
     # doesn't have to recompute the (i_c * stride0 + i_b * stride1) address
     # arithmetic + repeated HBM loads on every reuse within the iteration
