@@ -2053,6 +2053,7 @@ class StructRigidSimStaticConfig(metaclass=AutoInitMeta):
     integrator: int
     solver_type: int
     requires_grad: bool
+    parallel_init: bool = False  # parallelize init over (constraints, envs) when GPU is not saturated by envs alone
     enable_tiled_cholesky_mass_matrix: bool = False
     enable_tiled_cholesky_hessian: bool = False
     tiled_n_dofs_per_entity: int = -1

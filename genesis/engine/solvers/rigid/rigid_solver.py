@@ -349,6 +349,29 @@ class RigidSolver(KinematicSolver):
         self._func_vel_at_point = func_vel_at_point
         self._func_apply_coupling_force = func_apply_coupling_force
 
+    def _should_use_parallel_init(self):
+        """Use parallel init (ndrange over constraints+envs) when envs alone don't saturate the GPU.
+
+        Uses hardware-derived GPU core count to determine saturation threshold, following the same
+        multi-backend pattern as collider.py (line 219).
+        """
+        if gs.backend == gs.cpu or self.sim.options.requires_grad:
+            return False
+        import torch
+
+        if torch.cuda.is_available():
+            gpu_props = torch.cuda.get_device_properties(torch.cuda.current_device())
+            # NVIDIA: 128 CUDA cores per SM. AMD/ROCm: 64 stream processors per CU.
+            cores_per_unit = 64 if torch.version.hip else 128
+            gpu_cores = gpu_props.multi_processor_count * cores_per_unit
+        elif gs.backend == gs.metal:
+            # Upper-bound estimate for Apple Silicon: 40 GPU cores × 128 ALUs
+            gpu_cores = 5120
+        else:
+            # Fallback for other GPU backends (e.g. Vulkan)
+            gpu_cores = 16384
+        return self.n_envs <= gpu_cores
+
     def _build_static_config(self):
         static_rigid_sim_config = dict(
             backend=gs.backend,
@@ -377,6 +400,7 @@ class RigidSolver(KinematicSolver):
             n_geoms_=self.n_geoms_,
             n_dofs_=self.n_dofs_,
             n_envs=self._B,
+            parallel_init=self._should_use_parallel_init(),
         )
 
         if self.is_active:

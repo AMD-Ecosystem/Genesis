@@ -979,6 +979,19 @@ def func_equality_joint(
     constraint_state.aref[n_con, i_b] = aref
     constraint_state.efc_D[n_con, i_b] = 1.0 / diag
 
+    # Populate jac_relevant_dofs for this joint-equality constraint.
+    # Without this, sparse iterations see 0 relevant DOFs and produce
+    # zero forces, leading to NaN in the solver.
+    if qd.static(static_rigid_sim_config.sparse_solve):
+        con_n_relevant_dofs = 0
+        constraint_state.jac_relevant_dofs[n_con, con_n_relevant_dofs, i_b] = i_dof1
+        con_n_relevant_dofs += 1
+        if i_dof2 != i_dof1:
+            constraint_state.jac_relevant_dofs[n_con, con_n_relevant_dofs, i_b] = i_dof2
+            con_n_relevant_dofs += 1
+        constraint_state.jac_n_relevant_dofs[n_con, i_b] = con_n_relevant_dofs
+        _sort_relevant_dofs_descending(constraint_state, n_con, con_n_relevant_dofs, i_b)
+
 
 @qd.kernel(fastcache=gs.use_fastcache)
 def add_equality_constraints(
@@ -1272,6 +1285,7 @@ def func_equality_weld(
     if qd.static(static_rigid_sim_config.sparse_solve):
         for i_con in range(n_con, n_con + 3):
             constraint_state.jac_n_relevant_dofs[i_con, i_b] = con_n_relevant_dofs
+            _sort_relevant_dofs_descending(constraint_state, i_con, con_n_relevant_dofs, i_b)
 
     for i_con in range(n_con, n_con + 3):
         imp, aref = gu.imp_aref(sol_params, -pos_imp, jac_qvel[i_con - n_con], rot_error[i_con - n_con])
@@ -1406,6 +1420,10 @@ def add_frictionloss_constraints(
                             for i_d2 in range(n_dofs):
                                 constraint_state.jac[i_con, i_d2, i_b] = gs.qd_float(0.0)
                             constraint_state.jac[i_con, i_d, i_b] = jac
+
+                        if qd.static(static_rigid_sim_config.sparse_solve):
+                            constraint_state.jac_relevant_dofs[i_con, 0, i_b] = i_d
+                            constraint_state.jac_n_relevant_dofs[i_con, i_b] = 1
 
 
 # ====================================== Runtime User-Specified Weld Constraints ======================================
@@ -1545,11 +1563,15 @@ def func_hessian_direct_batch(
                 i_d1 = constraint_state.jac_relevant_dofs[i_c, i_d1_, i_b]
                 if qd.abs(constraint_state.jac[i_c, i_d1, i_b]) > EPS:
                     for i_d2_ in range(i_d1_, jac_n_relevant_dofs):
-                        i_d2 = constraint_state.jac_relevant_dofs[i_c, i_d2_, i_b]  # i_d2 is strictly <= i_d1
-                        constraint_state.nt_H[i_b, i_d1, i_d2] = (
-                            constraint_state.nt_H[i_b, i_d1, i_d2]
-                            + constraint_state.jac[i_c, i_d2, i_b]
-                            * constraint_state.jac[i_c, i_d1, i_b]
+                        i_d2 = constraint_state.jac_relevant_dofs[i_c, i_d2_, i_b]
+                        # Ensure lower triangle: row >= col. jac_relevant_dofs is descending within
+                        # each entity but can have cross-entity pairs where i_d2 > i_d1.
+                        row = qd.max(i_d1, i_d2)
+                        col = qd.min(i_d1, i_d2)
+                        constraint_state.nt_H[i_b, row, col] = (
+                            constraint_state.nt_H[i_b, row, col]
+                            + constraint_state.jac[i_c, col, i_b]
+                            * constraint_state.jac[i_c, row, i_b]
                             * constraint_state.efc_D[i_c, i_b]
                             * constraint_state.active[i_c, i_b]
                         )
@@ -1663,28 +1685,41 @@ def func_hessian_direct_tiled(
                         qd.simt.block.sync()
 
                     # Compute `H += J.T @ D @ J` for a single Hessian block
-                    pid = tid
-                    numel = n_dofs_tile_row * n_dofs_tile_col
-                    while pid < numel:
-                        i_d1_ = pid // n_dofs_tile_col
-                        i_d2_ = pid % n_dofs_tile_col
-                        i_d1 = i_d1_ + i_d1_start
-                        i_d2 = i_d2_ + i_d2_start
-                        if i_d1 >= i_d2:
+                    if is_diag_tile:
+                        n_lower_tri_tile = n_dofs_tile_row * (n_dofs_tile_row + 1) // 2
+                        pid = tid
+                        while pid < n_lower_tri_tile:
+                            i_d1_, i_d2_ = linear_to_lower_tri(pid)
+                            i_d1 = i_d1_ + i_d1_start
+                            i_d2 = i_d2_ + i_d2_start
                             coef = gs.qd_float(0.0)
                             if i_c_start == 0:
                                 coef = rigid_global_info.mass_mat[i_d1, i_d2, i_b]
-                            if is_diag_tile:
-                                for j_c_ in range(n_conts_tile):
-                                    coef = coef + jac_row[j_c_, i_d1_] * jac_row[j_c_, i_d2_] * efc_D[j_c_]
-                            else:
-                                for j_c_ in range(n_conts_tile):
-                                    coef = coef + jac_row[j_c_, i_d1_] * jac_col[j_c_, i_d2_] * efc_D[j_c_]
+                            for j_c_ in range(n_conts_tile):
+                                coef = coef + jac_row[j_c_, i_d1_] * jac_row[j_c_, i_d2_] * efc_D[j_c_]
                             if i_c_start == 0:
                                 constraint_state.nt_H[i_b, i_d1, i_d2] = coef
                             else:
                                 constraint_state.nt_H[i_b, i_d1, i_d2] = constraint_state.nt_H[i_b, i_d1, i_d2] + coef
-                        pid = pid + BLOCK_DIM
+                            pid = pid + BLOCK_DIM
+                    else:
+                        numel = n_dofs_tile_row * n_dofs_tile_col
+                        pid = tid
+                        while pid < numel:
+                            i_d1_ = pid // n_dofs_tile_col
+                            i_d2_ = pid % n_dofs_tile_col
+                            i_d1 = i_d1_ + i_d1_start
+                            i_d2 = i_d2_ + i_d2_start
+                            coef = gs.qd_float(0.0)
+                            if i_c_start == 0:
+                                coef = rigid_global_info.mass_mat[i_d1, i_d2, i_b]
+                            for j_c_ in range(n_conts_tile):
+                                coef = coef + jac_row[j_c_, i_d1_] * jac_col[j_c_, i_d2_] * efc_D[j_c_]
+                            if i_c_start == 0:
+                                constraint_state.nt_H[i_b, i_d1, i_d2] = coef
+                            else:
+                                constraint_state.nt_H[i_b, i_d1, i_d2] = constraint_state.nt_H[i_b, i_d1, i_d2] + coef
+                            pid = pid + BLOCK_DIM
                     qd.simt.block.sync()
 
                     i_d2_start = i_d2_start + MAX_DOFS_PER_BLOCK
@@ -3390,22 +3425,72 @@ def initialize_Jaref(
     static_rigid_sim_config: qd.template(),
 ):
     _B = static_rigid_sim_config.n_envs
+    if qd.static(static_rigid_sim_config.parallel_init):
+        _initialize_Jaref_parallel(
+            qacc=qacc,
+            constraint_state=constraint_state,
+            static_rigid_sim_config=static_rigid_sim_config,
+        )
+    else:
+        _initialize_Jaref_per_env(
+            qacc=qacc,
+            constraint_state=constraint_state,
+            static_rigid_sim_config=static_rigid_sim_config,
+        )
+
+
+@qd.func
+def _initialize_Jaref_body(
+    i_c,
+    i_b,
+    n_dofs,
+    qacc: array_class.V_ANNOTATION,
+    constraint_state: array_class.ConstraintState,
+    static_rigid_sim_config: qd.template(),
+):
+    Jaref = -constraint_state.aref[i_c, i_b]
+    if qd.static(static_rigid_sim_config.sparse_solve):
+        # C4: read from compact storage; per-row working set is
+        # bounded by jac_n_relevant_dofs (≤ max_nz) instead of N_d.
+        for i_d_ in range(constraint_state.jac_n_relevant_dofs[i_c, i_b]):
+            i_d = constraint_state.jac_relevant_dofs[i_c, i_d_, i_b]
+            Jaref = Jaref + constraint_state.jac_compact_values[i_c, i_d_, i_b] * qacc[i_d, i_b]
+    else:
+        for i_d in range(n_dofs):
+            Jaref = Jaref + constraint_state.jac[i_c, i_d, i_b] * qacc[i_d, i_b]
+    constraint_state.Jaref[i_c, i_b] = Jaref
+
+
+@qd.func
+def _initialize_Jaref_per_env(
+    qacc: array_class.V_ANNOTATION,
+    constraint_state: array_class.ConstraintState,
+    static_rigid_sim_config: qd.template(),
+):
+    _B = constraint_state.jac.shape[2]
     n_dofs = constraint_state.jac.shape[1]
 
     qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
     for i_b in range(_B):
         for i_c in range(constraint_state.n_constraints[i_b]):
-            Jaref = -constraint_state.aref[i_c, i_b]
-            if qd.static(static_rigid_sim_config.sparse_solve):
-                # C4: read from compact storage; per-row working set is
-                # bounded by jac_n_relevant_dofs (≤ max_nz) instead of N_d.
-                for i_d_ in range(constraint_state.jac_n_relevant_dofs[i_c, i_b]):
-                    i_d = constraint_state.jac_relevant_dofs[i_c, i_d_, i_b]
-                    Jaref = Jaref + constraint_state.jac_compact_values[i_c, i_d_, i_b] * qacc[i_d, i_b]
-            else:
-                for i_d in range(n_dofs):
-                    Jaref = Jaref + constraint_state.jac[i_c, i_d, i_b] * qacc[i_d, i_b]
-            constraint_state.Jaref[i_c, i_b] = Jaref
+            _initialize_Jaref_body(i_c, i_b, n_dofs, qacc, constraint_state, static_rigid_sim_config)
+
+
+@qd.func
+def _initialize_Jaref_parallel(
+    qacc: array_class.V_ANNOTATION,
+    constraint_state: array_class.ConstraintState,
+    static_rigid_sim_config: qd.template(),
+):
+    """Parallelizes over (constraints, envs) — better when GPU is not saturated by envs alone."""
+    _B = constraint_state.jac.shape[2]
+    n_dofs = constraint_state.jac.shape[1]
+    len_constraints = constraint_state.Jaref.shape[0]
+
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    for i_c, i_b in qd.ndrange(len_constraints, _B):
+        if i_c < constraint_state.n_constraints[i_b]:
+            _initialize_Jaref_body(i_c, i_b, n_dofs, qacc, constraint_state, static_rigid_sim_config)
 
 
 @qd.func
@@ -3609,13 +3694,10 @@ def func_solve_iter(
 
         if qd.static(static_rigid_sim_config.solver_type == gs.constraint_solver.Newton):
             func_build_changed_constraint_list(i_b, constraint_state=constraint_state)
-            is_degenerated = func_hessian_and_cholesky_factor_incremental_batch(
-                i_b,
-                constraint_state=constraint_state,
-                rigid_global_info=rigid_global_info,
-                static_rigid_sim_config=static_rigid_sim_config,
-            )
-            if is_degenerated:
+            if qd.static(static_rigid_sim_config.sparse_solve):
+                # Bypass incremental Cholesky when sparse_solve=True. The incremental rank-1 update
+                # assumes globally descending DOF order in jac_relevant_dofs, which doesn't hold
+                # for cross-entity constraints. Always use direct Hessian rebuild which has the max/min fix.
                 func_hessian_and_cholesky_factor_direct_batch(
                     i_b,
                     entities_info=entities_info,
@@ -3623,6 +3705,21 @@ def func_solve_iter(
                     rigid_global_info=rigid_global_info,
                     static_rigid_sim_config=static_rigid_sim_config,
                 )
+            else:
+                is_degenerated = func_hessian_and_cholesky_factor_incremental_batch(
+                    i_b,
+                    constraint_state=constraint_state,
+                    rigid_global_info=rigid_global_info,
+                    static_rigid_sim_config=static_rigid_sim_config,
+                )
+                if is_degenerated:
+                    func_hessian_and_cholesky_factor_direct_batch(
+                        i_b,
+                        entities_info=entities_info,
+                        constraint_state=constraint_state,
+                        rigid_global_info=rigid_global_info,
+                        static_rigid_sim_config=static_rigid_sim_config,
+                    )
 
         func_update_gradient_batch(
             i_b,
