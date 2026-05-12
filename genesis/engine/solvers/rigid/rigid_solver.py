@@ -379,6 +379,23 @@ class RigidSolver(KinematicSolver):
             n_envs=self._B,
         )
 
+        # Detect the contiguous prefix of zero-DoF entities (e.g. static Plane). When the layout
+        # has all zero-DoF entities packed at the start and all subsequent entities have
+        # n_dofs > 0, we can shrink the per-entity workgroup launches in CRBA / LLT-factor
+        # kernels (forward_dynamics.func_compute_mass_matrix_lds, func_factor_mass).
+        n_dyn_entities = self.n_entities_
+        dyn_entity_offset = 0
+        if self.is_active and self.entities:
+            offset = 0
+            while offset < len(self.entities) and self.entities[offset].n_dofs == 0:
+                offset += 1
+            tail_all_dynamic = all(e.n_dofs > 0 for e in self.entities[offset:])
+            if tail_all_dynamic and offset < len(self.entities):
+                dyn_entity_offset = offset
+                n_dyn_entities = max(1, len(self.entities) - offset)
+        static_rigid_sim_config["n_dynamic_entities_"] = n_dyn_entities
+        static_rigid_sim_config["dynamic_entity_offset_"] = dyn_entity_offset
+
         if self.is_active:
             # TODO: These alternative tiled algorithms are designed to reduce the impact of latency. However, naive
             # implementation scales slightly better asymptotically than shared memory-based implementation because the

@@ -312,7 +312,16 @@ def func_compute_mass_matrix_lds(
 
     n_entities = static_rigid_sim_config.n_entities_
     _B = static_rigid_sim_config.n_envs
-    n_thread_entities = static_rigid_sim_config.n_entities_ if qd.static(static_rigid_sim_config.use_hibernation) else n_entities
+    # Skip dispatching workgroups for fixed/zero-DoF entities (e.g. plane) by iterating only
+    # the dynamic-entity suffix. dynamic_entity_offset_ is the index of the first dynamic entity.
+    n_thread_entities = (
+        static_rigid_sim_config.n_entities_
+        if qd.static(static_rigid_sim_config.use_hibernation)
+        else qd.static(static_rigid_sim_config.n_dynamic_entities_)
+    )
+    DYN_OFFSET = qd.static(
+        0 if static_rigid_sim_config.use_hibernation else static_rigid_sim_config.dynamic_entity_offset_
+    )
 
     qd.loop_config(block_dim=BLOCK_DIM)
     for i in range(n_thread_entities * _B * BLOCK_DIM):
@@ -323,7 +332,7 @@ def func_compute_mass_matrix_lds(
         if i_b >= _B:
             continue
 
-        i_e = i_e_local
+        i_e = i_e_local + DYN_OFFSET
 
         if qd.static(static_rigid_sim_config.use_hibernation):
             if not func_check_index_range(i_e_local, static_rigid_sim_config.n_entities_):
@@ -755,12 +764,17 @@ def func_factor_mass(
     if qd.static(not BW):
         n_entities = static_rigid_sim_config.n_entities_
         _B = static_rigid_sim_config.n_envs
+        # Iterate only dynamic-entity suffix to avoid wasted workgroup launches for fixed/zero-DoF
+        # entities (e.g. Plane). DYN_OFFSET shifts the local entity index back to the global index.
+        n_dyn_entities = qd.static(static_rigid_sim_config.n_dynamic_entities_)
+        DYN_OFFSET = qd.static(static_rigid_sim_config.dynamic_entity_offset_)
 
         if qd.static(
             not static_rigid_sim_config.enable_tiled_cholesky_mass_matrix or static_rigid_sim_config.backend == gs.cpu
         ):
             qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL)
-            for i_e, i_b in qd.ndrange(n_entities, _B):
+            for i_e_local, i_b in qd.ndrange(n_dyn_entities, _B):
+                i_e = i_e_local + DYN_OFFSET
                 if rigid_global_info.mass_mat_mask[i_e, i_b]:
                     entity_dof_start = entities_info.dof_start[i_e]
                     entity_dof_end = entities_info.dof_end[i_e]
@@ -807,10 +821,11 @@ def func_factor_mass(
             WARP_SIZE = qd.static(64)
 
             qd.loop_config(block_dim=BLOCK_DIM)
-            for i in range(n_entities * _B * BLOCK_DIM):
+            for i in range(n_dyn_entities * _B * BLOCK_DIM):
                 tid = i % BLOCK_DIM
-                i_e = (i // BLOCK_DIM) % n_entities
-                i_b = i // (BLOCK_DIM * n_entities)
+                i_e_local = (i // BLOCK_DIM) % n_dyn_entities
+                i_e = i_e_local + DYN_OFFSET
+                i_b = i // (BLOCK_DIM * n_dyn_entities)
                 if i_b >= _B:
                     continue
 

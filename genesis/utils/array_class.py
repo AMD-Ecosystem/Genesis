@@ -2081,6 +2081,16 @@ class StructRigidSimStaticConfig(metaclass=AutoInitMeta):
     n_geoms_: int = -1
     n_dofs_: int = -1
     n_envs: int = -1
+    # Dispatch-elision shortcut for kernels whose work-per-entity is zero when the entity has
+    # n_dofs == 0 (e.g. the static Plane in benchmark scenes). When the entity layout has all
+    # zero-DoF entities packed as a contiguous prefix, we can iterate only the dynamic suffix:
+    #   n_dynamic_entities_ = number of trailing entities with n_dofs > 0
+    #   dynamic_entity_offset_ = index of the first dynamic entity
+    # Used by the CRBA mass-matrix and Cholesky factor kernels to skip launching workgroups
+    # for plane-like entities. If the contiguous-prefix assumption does not hold, these fall
+    # back to (n_entities_, 0) and the optimization no-ops.
+    n_dynamic_entities_: int = -1
+    dynamic_entity_offset_: int = 0
 
 
 # =========================================== DataManager ===========================================
