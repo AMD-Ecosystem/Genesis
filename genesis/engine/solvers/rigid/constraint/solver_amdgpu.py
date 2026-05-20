@@ -1761,9 +1761,9 @@ def func_solve_body_decomposed_amdgpu(
 #     deadlock the lanes that took the gate path)
 
 
-_TWC_BLOCK_DIM = 64
+_TWC_BLOCK_DIM = 128
 _TWC_COOP_FACTOR = 8
-_TWC_ENVS_PER_BLOCK = 8
+_TWC_ENVS_PER_BLOCK = 16
 
 
 @qd.func
