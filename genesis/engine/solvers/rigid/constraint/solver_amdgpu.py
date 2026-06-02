@@ -1311,6 +1311,10 @@ def _kernel_solve_body_wavecoop_amdgpu(
         bcast = qd.simt.block.SharedArray((4,), gs.qd_float)
         cost_red = qd.simt.block.SharedArray((BLOCK_DIM,), gs.qd_float)
         gauss_red = qd.simt.block.SharedArray((BLOCK_DIM,), gs.qd_float)
+        # Working vector for the wave-cooperative LDL^T mass solve (Phase 5).
+        # Staged in LDS so the two triangular sweeps avoid per-step HBM
+        # round-trips; sized to the static padded dof count.
+        msolve = qd.simt.block.SharedArray((N_DOFS,), gs.qd_float)
 
         # ----- gate (matches monolith): WG-uniform on i_b. -----
         if constraint_state.n_constraints[i_b] == 0:
@@ -1476,27 +1480,139 @@ def _kernel_solve_body_wavecoop_amdgpu(
                 constraint_state.gauss[i_b] = total_gauss
             qd.simt.block.sync()
 
-            # ===== Phase 5: update gradient (tid=0; mass solve is per-entity) =====
-            if tid == 0:
-                solver.func_update_gradient_batch(
-                    i_b,
-                    dofs_state=dofs_state,
-                    entities_info=entities_info,
-                    rigid_global_info=rigid_global_info,
-                    constraint_state=constraint_state,
-                    static_rigid_sim_config=static_rigid_sim_config,
+            # ===== Phase 5: update gradient (WAVE-COOPERATIVE) =====
+            # Mirrors solver.func_update_gradient_batch but spreads the work
+            # across all 64 lanes instead of running on lane 0 alone:
+            #   5a: grad = Ma - force - qfrc_constraint        (parallel per-dof)
+            #   5b: Mgrad = M^{-1} grad via a wave-cooperative LDL^T solve
+            #       (CG only; Newton is excluded by _wavecoop_amdgpu_is_compatible)
+            # 5a:
+            i_d = tid
+            while i_d < N_DOFS:
+                constraint_state.grad[i_d, i_b] = (
+                    constraint_state.Ma[i_d, i_b]
+                    - dofs_state.force[i_d, i_b]
+                    - constraint_state.qfrc_constraint[i_d, i_b]
                 )
+                i_d = i_d + BLOCK_DIM
             qd.simt.block.sync()
 
-            # ===== Phase 6: terminate or update descent (tid=0) =====
+            # 5b: cooperative mass solve, per entity (block-diagonal M).
+            # Column-sweep triangular solves: the critical path is O(n_dofs)
+            # sequential steps (vs O(n_dofs^2) serial on lane 0), each step
+            # fanning the just-finalized component out across the lanes.
+            # Intra-wavefront syncs (block_dim=64 == one wave64) are cheap.
+            if qd.static(static_rigid_sim_config.solver_type == gs.constraint_solver.CG):
+                for i_e in range(qd.static(static_rigid_sim_config.n_entities_)):
+                    if rigid_global_info.mass_mat_mask[i_e, i_b]:
+                        e_ds = entities_info.dof_start[i_e]
+                        e_de = entities_info.dof_end[i_e]
+                        e_n = e_de - e_ds
+
+                        # load y -> LDS
+                        i_d = e_ds + tid
+                        while i_d < e_de:
+                            msolve[i_d] = constraint_state.grad[i_d, i_b]
+                            i_d = i_d + BLOCK_DIM
+                        qd.simt.block.sync()
+
+                        # Step 1: solve L^T w = y (back-substitution, p high->low)
+                        for pp in range(e_n):
+                            p = e_de - 1 - pp
+                            wp = msolve[p]
+                            k = e_ds + tid
+                            while k < p:
+                                msolve[k] = msolve[k] - rigid_global_info.mass_mat_L[p, k, i_b] * wp
+                                k = k + BLOCK_DIM
+                            qd.simt.block.sync()
+
+                        # Step 2: z = D^{-1} w (parallel per-dof)
+                        i_d = e_ds + tid
+                        while i_d < e_de:
+                            msolve[i_d] = msolve[i_d] * rigid_global_info.mass_mat_D_inv[i_d, i_b]
+                            i_d = i_d + BLOCK_DIM
+                        qd.simt.block.sync()
+
+                        # Step 3: solve L x = z (forward-substitution, p low->high)
+                        for pp in range(e_n):
+                            p = e_ds + pp
+                            wp = msolve[p]
+                            k = p + 1 + tid
+                            while k < e_de:
+                                msolve[k] = msolve[k] - rigid_global_info.mass_mat_L[k, p, i_b] * wp
+                                k = k + BLOCK_DIM
+                            qd.simt.block.sync()
+
+                        # store x -> Mgrad
+                        i_d = e_ds + tid
+                        while i_d < e_de:
+                            constraint_state.Mgrad[i_d, i_b] = msolve[i_d]
+                            i_d = i_d + BLOCK_DIM
+                        qd.simt.block.sync()
+
+            # ===== Phase 6: terminate or update descent (WAVE-COOPERATIVE) =====
+            # Mirrors solver.func_terminate_or_update_descent_batch; the
+            # grad-norm and CG-beta dot products are lane-strided partials
+            # reduced in LDS, the search update is embarrassingly parallel.
+            my_gn = gs.qd_float(0.0)
+            i_d = tid
+            while i_d < N_DOFS:
+                g_d = constraint_state.grad[i_d, i_b]
+                my_gn = my_gn + g_d * g_d
+                i_d = i_d + BLOCK_DIM
+            cost_red[tid] = my_gn
+            qd.simt.block.sync()
             if tid == 0:
-                solver.func_terminate_or_update_descent_batch(
-                    i_b,
-                    prev_cost,
-                    rigid_global_info=rigid_global_info,
-                    constraint_state=constraint_state,
-                    static_rigid_sim_config=static_rigid_sim_config,
-                )
+                gn_sq = gs.qd_float(0.0)
+                for k in qd.static(range(BLOCK_DIM)):
+                    gn_sq = gn_sq + cost_red[k]
+                bcast[2] = gn_sq
+            qd.simt.block.sync()
+
+            grad_norm = qd.sqrt(bcast[2])
+            tol_scaled = (
+                rigid_global_info.meaninertia[i_b] * qd.max(1, N_DOFS)
+            ) * rigid_global_info.tolerance[None]
+            improvement = prev_cost - constraint_state.cost[i_b]
+            improved6 = (grad_norm > tol_scaled) and (improvement > tol_scaled)
+            if tid == 0:
+                constraint_state.improved[i_b] = improved6
+
+            if improved6:
+                # CG beta (two dot products), lane-strided + LDS reduce.
+                my_beta = gs.qd_float(0.0)
+                my_pgpm = gs.qd_float(0.0)
+                i_d = tid
+                while i_d < N_DOFS:
+                    grad_d = constraint_state.grad[i_d, i_b]
+                    Mgrad_d = constraint_state.Mgrad[i_d, i_b]
+                    pMgrad_d = constraint_state.cg_prev_Mgrad[i_d, i_b]
+                    pgrad_d = constraint_state.cg_prev_grad[i_d, i_b]
+                    my_beta = my_beta + grad_d * (Mgrad_d - pMgrad_d)
+                    my_pgpm = my_pgpm + pMgrad_d * pgrad_d
+                    i_d = i_d + BLOCK_DIM
+                cost_red[tid] = my_beta
+                gauss_red[tid] = my_pgpm
+                qd.simt.block.sync()
+                if tid == 0:
+                    t_beta = gs.qd_float(0.0)
+                    t_pgpm = gs.qd_float(0.0)
+                    for k in qd.static(range(BLOCK_DIM)):
+                        t_beta = t_beta + cost_red[k]
+                        t_pgpm = t_pgpm + gauss_red[k]
+                    cg_beta = qd.max(t_beta / qd.max(rigid_global_info.EPS[None], t_pgpm), 0.0)
+                    constraint_state.cg_pg_dot_pMg[i_b] = t_pgpm
+                    constraint_state.cg_beta[i_b] = cg_beta
+                    bcast[3] = cg_beta
+                qd.simt.block.sync()
+
+                cg_beta_b = bcast[3]
+                i_d = tid
+                while i_d < N_DOFS:
+                    constraint_state.search[i_d, i_b] = (
+                        -constraint_state.Mgrad[i_d, i_b] + cg_beta_b * constraint_state.search[i_d, i_b]
+                    )
+                    i_d = i_d + BLOCK_DIM
             qd.simt.block.sync()
 
 
