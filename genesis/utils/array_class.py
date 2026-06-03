@@ -400,6 +400,7 @@ def get_constraint_state(constraint_solver, solver):
         cg_beta=V(dtype=gs.qd_float, shape=(_B,)),
         cg_pg_dot_pMg=V(dtype=gs.qd_float, shape=(_B,)),
         quad_gauss=V(dtype=gs.qd_float, shape=(3, _B)),
+        candidates=V(dtype=gs.qd_float, shape=(12, _B)),
         ls_alpha=V(dtype=gs.qd_float, shape=(_B,)),
         ls_p0_cost=V(dtype=gs.qd_float, shape=(_B,)),
         ls_alpha_newton=V(dtype=gs.qd_float, shape=(_B,)),

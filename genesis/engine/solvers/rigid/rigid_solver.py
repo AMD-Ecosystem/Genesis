@@ -420,6 +420,14 @@ class RigidSolver(KinematicSolver):
         """
         if gs.backend == gs.cpu or self.sim.options.requires_grad:
             return False
+        # NOTE(npoulad/genesis-1.0.0-rebase): the transposed-layout coop kernels in
+        # constraint/solver.py rely on qd.simt.subgroup.reduce_all_{add,max}_tiled and
+        # qd.simt.subgroup.sync, which are absent from quadrants v0.5.3
+        # (ROCm/quadrants merge/upstream-main-2026-05-08). Force the canonical layout
+        # until those primitives are restored. Opt back in with GS_ENABLE_COOP_SOLVER=1.
+        import os as _os
+        if _os.environ.get("GS_ENABLE_COOP_SOLVER", "0") != "1":
+            return False
         # Sparse solve relies on jac_relevant_dofs / jac_n_relevant_dofs to skip irrelevant dofs in the constraint
         # update. The cooperative qfrc kernel that pairs with the flipped layout is dense-only, and several other
         # kernels that read jac under the flipped layout (e.g. the refinement-phase _func_update_qfrc_constraint_per_dof)

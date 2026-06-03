@@ -7,6 +7,7 @@ terrain), and contact management.
 """
 
 import math
+import os
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -898,8 +899,12 @@ class Collider:
         # GPU dedup-eligible path: warp-per-env coop kernel beats one-env-per-thread serial fused kernel only when
         # the GPU has spare occupancy. The _B * 2 <= gpu_cores gate keeps the coop launch from oversubscribing the
         # SMs (the serial fused kernel wins above that threshold).
+        # NOTE(npoulad/genesis-1.0.0-rebase): coop variant relies on qd.simt.subgroup.{sync,reduce_all_*_tiled}
+        # primitives that are absent from quadrants v0.5.3 (ROCm/quadrants merge/upstream-main-2026-05-08).
+        # Force the serial fallback until those primitives are restored (gate with GS_ENABLE_COOP_DEDUP=1).
         ran_fused_dedup_coop = (
-            gs.backend != gs.cpu
+            os.environ.get("GS_ENABLE_COOP_DEDUP", "0") == "1"
+            and gs.backend != gs.cpu
             and self._collider_static_config.has_prunable_contacts
             and not self._solver._static_rigid_sim_config.requires_grad
             and (self._solver._options.contact_pruning_tolerance or 0.0) > 0.0
