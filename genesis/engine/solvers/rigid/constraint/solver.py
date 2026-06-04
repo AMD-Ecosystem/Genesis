@@ -3209,10 +3209,10 @@ def func_update_qfrc_constraint_dense(
 ):
     """Dense `qfrc_constraint = J^T @ efc_force` gather, parallelized
     over (n_dofs, _B). Extracted from `func_update_constraint_batch`
-    to un-starve the dense qfrc work: the per-env batch loop had
-    only 8192 threads (wgs=128, below the MI300X 304-CU floor); this
-    2D form widens to n_dofs * _B threads (wgs=4480+ on g1_29dof),
-    matching the initialize_Jaref / kernel_8 2D-fy pattern.
+    to un-starve the dense qfrc work: the per-env batch loop launched
+    only _B threads, which under-utilizes the GPU at typical env counts;
+    this 2D form widens to n_dofs * _B threads, matching the
+    initialize_Jaref / kernel_8 2D-fy pattern.
 
     Each (i_d, i_b) thread reads jac[i_c, i_d, i_b] for
     i_c in range(n_constraints[i_b]) and writes only its own
@@ -3256,11 +3256,10 @@ def func_update_constraint(
             defer_dense_qfrc=True,
         )
 
-    # GRID-STARVATION FIX (kernel_5 dense qfrc gather): lifted out of
-    # the per-env batch into a 2D ndrange so the heavy
-    # `qfrc_constraint = J^T @ efc_force` work is no longer pinned to
-    # the 8192-thread (128 wg) launch geometry. Sparse path still
-    # scatters inside the 1D batch (atomic-free).
+    # Dense qfrc gather lifted out of the per-env batch into a 2D ndrange
+    # so the `qfrc_constraint = J^T @ efc_force` work is no longer
+    # pinned to a _B-thread launch. Sparse path still scatters inside
+    # the 1D batch (atomic-free).
     if qd.static(not static_rigid_sim_config.sparse_solve):
         func_update_qfrc_constraint_dense(
             constraint_state=constraint_state,
@@ -3319,15 +3318,13 @@ def func_update_gradient_tiled(
         )
 
     if qd.static(static_rigid_sim_config.solver_type == gs.constraint_solver.CG):
-        # GRID-STARVATION FIX: the previous `for i_b in range(_B)` (8192/32=256 wgs,
-        # waves=256) was below the MI300X 304-CU floor. When hibernation is disabled
-        # (the common case), n_awake_entities is a compile-time-known
-        # `n_entities_`, so we can promote the inner serial loop over entities into
-        # the parallel grid. New grid: (n_entities_, _B) = 2*8192 = 16384 threads
-        # → wgs=512, waves=512 (clears the 304-SIMD floor). Each thread calls
-        # func_solve_mass_entity directly, whose body is guarded by
-        # mass_mat_mask[i_e, i_b], so zero-DOF entities (e.g. Plane) become
-        # near-no-op threads — same total work, ~2x dispatch width.
+        # The previous `for i_b in range(_B)` launched only _B threads,
+        # under-utilizing the GPU. When hibernation is disabled, n_awake_entities
+        # is compile-time-known as `n_entities_`, so the inner entity loop is
+        # promoted into a 2D (n_entities_, _B) ndrange by calling
+        # func_solve_mass_entity directly. Zero-DOF entities (e.g. Plane) hit
+        # the mass_mat_mask guard and become near-no-op threads — same total
+        # work, n_entities_-wider dispatch.
         if qd.static(not static_rigid_sim_config.use_hibernation):
             qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, block_dim=32)
             for i_e, i_b in qd.ndrange(static_rigid_sim_config.n_entities_, _B):
