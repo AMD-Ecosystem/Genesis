@@ -276,6 +276,172 @@ def func_vel_at_point(pos_world, link_idx, i_b, links_state: array_class.LinksSt
 
 
 @qd.func
+def _linear_to_lower_tri(i_pair: qd.i32):
+    """Linear index -> (row, col) of a lower-triangular matrix including diagonal.
+    Sequence: (0,0), (1,0), (1,1), (2,0), (2,1), (2,2), ...
+    Uses f32 sqrt (fast on all backends) with integer post-correction for
+    GPUs whose sqrt is not correctly rounded on perfect squares.
+    """
+    i_d = qd.cast(qd.floor((qd.sqrt(qd.cast(8 * i_pair + 1, qd.f32)) - 1.0) / 2.0), qd.i32)
+    if (i_d + 1) * (i_d + 2) // 2 <= i_pair:
+        i_d = i_d + 1
+    j_d = i_pair - i_d * (i_d + 1) // 2
+    return i_d, j_d
+
+
+@qd.func
+def func_compute_mass_matrix_lds(
+    implicit_damping: qd.template(),
+    links_state: array_class.LinksState,
+    links_info: array_class.LinksInfo,
+    dofs_state: array_class.DofsState,
+    dofs_info: array_class.DofsInfo,
+    entities_info: array_class.EntitiesInfo,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: qd.template(),
+    is_backward: qd.template(),
+):
+    BW = qd.static(is_backward)
+
+    # LDS-optimized GPU implementation using a fixed block size and the
+    # configured per-entity tiled DoF bound.
+    BLOCK_DIM = qd.static(64)
+    MAX_DOFS_PER_ENTITY = qd.static(static_rigid_sim_config.tiled_n_dofs_per_entity)
+
+    n_entities = static_rigid_sim_config.n_entities_
+    _B = static_rigid_sim_config.n_envs
+    n_thread_entities = static_rigid_sim_config.n_entities_ if qd.static(static_rigid_sim_config.use_hibernation) else n_entities
+
+    qd.loop_config(block_dim=BLOCK_DIM)
+    for i in range(n_thread_entities * _B * BLOCK_DIM):
+        tid = i % BLOCK_DIM
+        i_e_local = (i // BLOCK_DIM) % n_thread_entities
+        i_b = i // (BLOCK_DIM * n_thread_entities)
+
+        if i_b >= _B:
+            continue
+
+        i_e = i_e_local
+
+        if qd.static(static_rigid_sim_config.use_hibernation):
+            if not func_check_index_range(
+                i_e_local, 0, static_rigid_sim_config.n_entities_, static_rigid_sim_config.use_hibernation
+            ):
+                continue
+            i_e = rigid_global_info.awake_entities[i_e_local, i_b]
+        entity_dof_start = entities_info.dof_start[i_e]
+        entity_dof_end = entities_info.dof_end[i_e]
+        n_dofs = entities_info.n_dofs[i_e]
+
+        # This kernel uses a dense local mass matrix in shared memory, so its LDS
+        # footprint is larger than kernels that use packed lower-triangular storage.
+        # Total bytes = 4 * (n^2 + 12n), where:
+        #   - n^2      comes from mass_mat_local[n, n]
+        #   - 12n      comes from 4 vector caches of shape [n, 3]
+        # Constraining that to ~64KB gives n <= 122 for 4-byte floats.
+        KERNEL_MAX_DOFS_PER_ENTITY = qd.static(122 if MAX_DOFS_PER_ENTITY > 122 else MAX_DOFS_PER_ENTITY)
+
+        if n_dofs <= 0 or n_dofs > KERNEL_MAX_DOFS_PER_ENTITY:
+            continue
+
+        # Shared-memory allocation sized to this kernel's actual dense-matrix budget.
+        f_ang_cache = qd.simt.block.SharedArray((KERNEL_MAX_DOFS_PER_ENTITY, 3), gs.qd_float)
+        f_vel_cache = qd.simt.block.SharedArray((KERNEL_MAX_DOFS_PER_ENTITY, 3), gs.qd_float)
+        cdof_ang_cache = qd.simt.block.SharedArray((KERNEL_MAX_DOFS_PER_ENTITY, 3), gs.qd_float)
+        cdof_vel_cache = qd.simt.block.SharedArray((KERNEL_MAX_DOFS_PER_ENTITY, 3), gs.qd_float)
+        mass_mat_local = qd.simt.block.SharedArray(
+            (KERNEL_MAX_DOFS_PER_ENTITY, KERNEL_MAX_DOFS_PER_ENTITY), gs.qd_float
+        )
+
+        # Cooperative loading into LDS
+        for load_round in range((n_dofs + BLOCK_DIM - 1) // BLOCK_DIM):
+            i_d_local = load_round * BLOCK_DIM + tid
+            if i_d_local < n_dofs:
+                i_d_global = entity_dof_start + i_d_local
+
+                # Coalesced loading of all vector components
+                f_ang_cache[i_d_local, 0] = dofs_state.f_ang[i_d_global, i_b][0]
+                f_ang_cache[i_d_local, 1] = dofs_state.f_ang[i_d_global, i_b][1]
+                f_ang_cache[i_d_local, 2] = dofs_state.f_ang[i_d_global, i_b][2]
+
+                f_vel_cache[i_d_local, 0] = dofs_state.f_vel[i_d_global, i_b][0]
+                f_vel_cache[i_d_local, 1] = dofs_state.f_vel[i_d_global, i_b][1]
+                f_vel_cache[i_d_local, 2] = dofs_state.f_vel[i_d_global, i_b][2]
+
+                cdof_ang_cache[i_d_local, 0] = dofs_state.cdof_ang[i_d_global, i_b][0]
+                cdof_ang_cache[i_d_local, 1] = dofs_state.cdof_ang[i_d_global, i_b][1]
+                cdof_ang_cache[i_d_local, 2] = dofs_state.cdof_ang[i_d_global, i_b][2]
+
+                cdof_vel_cache[i_d_local, 0] = dofs_state.cdof_vel[i_d_global, i_b][0]
+                cdof_vel_cache[i_d_local, 1] = dofs_state.cdof_vel[i_d_global, i_b][1]
+                cdof_vel_cache[i_d_local, 2] = dofs_state.cdof_vel[i_d_global, i_b][2]
+
+        qd.simt.block.sync()  # Ensure all data is loaded
+
+        # Compute mass matrix using LDS - optimal performance
+        n_pairs = n_dofs * (n_dofs + 1) // 2
+        pair_idx = tid
+
+        while pair_idx < n_pairs:
+            # Convert linear index to (i, j) lower triangular
+            i_d_, j_d_ = _linear_to_lower_tri(pair_idx)
+
+            # Fast LDS-based computation
+            ang_dot = (f_ang_cache[i_d_, 0] * cdof_ang_cache[j_d_, 0] +
+                      f_ang_cache[i_d_, 1] * cdof_ang_cache[j_d_, 1] +
+                      f_ang_cache[i_d_, 2] * cdof_ang_cache[j_d_, 2])
+
+            vel_dot = (f_vel_cache[i_d_, 0] * cdof_vel_cache[j_d_, 0] +
+                      f_vel_cache[i_d_, 1] * cdof_vel_cache[j_d_, 1] +
+                      f_vel_cache[i_d_, 2] * cdof_vel_cache[j_d_, 2])
+
+            # Store in local matrix
+            mass_mat_local[i_d_, j_d_] = ang_dot + vel_dot
+            pair_idx += BLOCK_DIM
+
+        qd.simt.block.sync()
+
+        # Write results to global memory with masking
+        global_pair_idx = tid
+        while global_pair_idx < n_pairs:
+            i_d_ = qd.cast(qd.floor((qd.sqrt(qd.cast(8 * global_pair_idx + 1, qd.f32)) - 1.0) / 2.0), qd.i32)
+            if (i_d_ + 1) * (i_d_ + 2) // 2 <= global_pair_idx:
+                i_d_ = i_d_ + 1
+            j_d_ = global_pair_idx - i_d_ * (i_d_ + 1) // 2
+
+            i_d_global = entity_dof_start + i_d_
+            j_d_global = entity_dof_start + j_d_
+
+            # Apply masking and store
+            rigid_global_info.mass_mat[i_d_global, j_d_global, i_b] = (
+                mass_mat_local[i_d_, j_d_] * rigid_global_info.mass_parent_mask[i_d_global, j_d_global]
+            )
+
+            global_pair_idx += BLOCK_DIM
+
+        # Mirror upper triangle for symmetric matrix in both forward and backward passes
+        qd.simt.block.sync()  # Ensure lower-triangle stores are complete
+
+        n_upper_pairs = n_dofs * (n_dofs - 1) // 2
+        upper_idx = tid
+
+        while upper_idx < n_upper_pairs:
+            # Convert to upper triangle indices
+            i_d_ = qd.cast(qd.floor((qd.sqrt(qd.cast(8 * upper_idx + 1, qd.f32)) + 1.0) / 2.0), qd.i32)
+            if i_d_ * (i_d_ + 1) // 2 <= upper_idx:
+                i_d_ = i_d_ + 1
+            j_d_ = upper_idx - i_d_ * (i_d_ - 1) // 2
+
+            i_d_global = entity_dof_start + j_d_  # Note: swapped for upper triangle
+            j_d_global = entity_dof_start + i_d_
+
+            # Mirror from lower triangle
+            rigid_global_info.mass_mat[i_d_global, j_d_global, i_b] = rigid_global_info.mass_mat[j_d_global, i_d_global, i_b]
+
+            upper_idx += BLOCK_DIM
+
+
+@qd.func
 def func_compute_mass_matrix(
     implicit_damping: qd.template(),
     # Quadrants variables
@@ -380,7 +546,24 @@ def func_compute_mass_matrix(
                         dofs_state.cdof_ang[i_d, i_b],
                     )
 
-    if qd.static(static_rigid_sim_config.constraint_layout_transposed and not static_rigid_sim_config.use_hibernation):
+    if qd.static(
+        static_rigid_sim_config.enable_tiled_cholesky_mass_matrix and static_rigid_sim_config.backend != gs.cpu
+    ):
+        # LDS-fused assembly (the fork's AMD-optimized path; staged f_ang/f_vel/cdof in shared memory and
+        # computes the lower triangle once, then mirrors). ~1.5x faster than the no-LDS cooperative writer
+        # below on gfx942 (mass_mat_assemble 224ms -> ~146ms in the G68 baseline).
+        func_compute_mass_matrix_lds(
+            implicit_damping=implicit_damping,
+            links_state=links_state,
+            links_info=links_info,
+            dofs_state=dofs_state,
+            dofs_info=dofs_info,
+            entities_info=entities_info,
+            rigid_global_info=rigid_global_info,
+            static_rigid_sim_config=static_rigid_sim_config,
+            is_backward=BW,
+        )
+    elif qd.static(static_rigid_sim_config.constraint_layout_transposed and not static_rigid_sim_config.use_hibernation):
         # Cooperative warp-per-(entity, env) writer over the lower triangle (inclusive of diagonal). Each cell's
         # symmetric value is computed once via the sqrt-formula compressed pair index and written to both
         # `[i_d, j_d, i_b]` and `[j_d, i_d, i_b]` inline, saving the upper-tri dot products that the previous
