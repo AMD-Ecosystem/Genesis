@@ -502,7 +502,15 @@ class RigidSolver(KinematicSolver):
                     max(math.ceil(self.n_dofs / cholesky_tile_size), 1) * cholesky_tile_size,
                     max_n_warps * 32,
                 )
-                tiled_n_dofs_per_entity = min(max(math.ceil(max_n_dofs_per_entity / 32), 1), max_n_warps) * 32
+                if gs.backend == gs.amdgpu:
+                    # AMD wave64: the *32 (CUDA warp) rounding oversizes the factor_mass LDS
+                    # tile (e.g. max_n_dofs=43 -> 64), which on gfx942 caps occupancy to ~1
+                    # wave/EU and ~doubles factor_mass time. The tiled kernel indexes the LDS
+                    # array by actual n_dofs (the BLOCK_DIM=32 stride is independent of the
+                    # array extent), so the tile only needs to cover max_n_dofs_per_entity.
+                    tiled_n_dofs_per_entity = min(max(max_n_dofs_per_entity, 1), max_n_warps * 32)
+                else:
+                    tiled_n_dofs_per_entity = min(max(math.ceil(max_n_dofs_per_entity / 32), 1), max_n_warps) * 32
 
                 # Route the per-step warm-start factor+solve through the fused kernel whenever the tiled cholesky path
                 # is available. The monolith body's incremental rank-1 update needs L in nt_H, so the fused kernel
