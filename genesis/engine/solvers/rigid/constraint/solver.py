@@ -4043,12 +4043,25 @@ def _get_static_config(*args, **kwargs):
     return args[5] if len(args) > 5 else kwargs["static_rigid_sim_config"]
 
 
+# Constraint-solver variant auto-tuning. Two coupled knobs drive throughput on the AMDGPU RL-scaling workload:
+#
+#   1. Sample budget. first_warmup=1 / active=2 is too noisy to reliably pick the fastest variant; a slower variant
+#      (monolith / lifted_loop) can win on transient state. first_warmup=3 + active=5 gives each variant 5 warm
+#      timing samples so the fast wave-coop / tiled-wc variant is selected reliably (matches the amd-integration
+#      tuning). The first selection completes inside the untimed warmup window.
+#
+#   2. Re-evaluation. repeat_after_seconds=5 clears the cached choice and re-benchmarks *every* compatible variant
+#      (including the slow ones, each with a pair of GPU syncs) every 5s -- i.e. several times inside the ~19s timed
+#      window. With the v1.0.0 variant set (decomposed disabled, so monolith/wavecoop/tiled-wc/lifted_loop all
+#      compete) that periodic churn is the dominant RL-scaling throughput regression. Disable it (repeat_after_seconds=0):
+#      the workload is steady, so we pick once during warmup and then run the winning variant for the whole timed
+#      window with zero dispatch overhead (the chosen impl is served from the cached fast path).
 @qd.perf_dispatch(
     get_geometry_hash=lambda *args, **kwargs: (*args, frozendict(kwargs)),
-    first_warmup=1,
-    warmup=0,
-    active=2,
-    repeat_after_seconds=5,
+    first_warmup=3,
+    warmup=3,
+    active=5,
+    repeat_after_seconds=0,
 )
 def func_solve_body(
     entities_info: array_class.EntitiesInfo,
