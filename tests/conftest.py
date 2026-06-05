@@ -266,16 +266,40 @@ def _get_gpu_indices():
                 stacklevel=2,
             )
 
-        # AMD / other: fall back to torch device count (ROCm exposes GPUs through torch.cuda)
-        try:
-            import torch
-
-            if torch.cuda.is_available():
-                return tuple(range(torch.cuda.device_count()))
-        except Exception:
-            pass
+        # AMD / other: fall back to torch device count (ROCm exposes GPUs through torch.cuda).
+        #
+        # This must NOT touch torch.cuda in-process here: `_get_gpu_indices()` is called from
+        # `pytest_sessionstart` in each xdist worker *before* pytest-forked forks the per-test
+        # subprocesses. `torch.cuda.is_available()` / `torch.cuda.device_count()` initialize the
+        # CUDA/HIP primary context in the worker parent, after which every forked test dies with
+        # "Cannot re-initialize CUDA in forked subprocess". Query the count in a short-lived
+        # subprocess so the worker parent's CUDA state stays pristine. (After sessionstart sets
+        # HIP_VISIBLE_DEVICES, later calls short-circuit via _get_visible_gpu_indices above, so this
+        # subprocess runs at most once per worker.)
+        count = _query_torch_gpu_count_subprocess()
+        if count > 0:
+            return tuple(range(count))
 
     return (0,)
+
+
+def _query_torch_gpu_count_subprocess():
+    """Return torch's GPU device count without initializing CUDA/HIP in the current process.
+
+    Initializing the primary context in an xdist worker parent before pytest-forked forks each
+    test poisons every forked test with "Cannot re-initialize CUDA in forked subprocess", so the
+    query is delegated to a short-lived subprocess. Returns 0 on any failure.
+    """
+    code = "import torch; print(torch.cuda.device_count() if torch.cuda.is_available() else 0)"
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, timeout=120, check=False
+        )
+        if result.returncode == 0:
+            return int(result.stdout.strip() or "0")
+    except Exception:
+        pass
+    return 0
 
 
 def _torch_get_gpu_idx(device):
