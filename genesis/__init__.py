@@ -476,6 +476,28 @@ sys.excepthook = _custom_excepthook
 from .ext import _trimesh_patch
 from .utils.misc import get_src_dir as _get_src_dir
 
+# Pre-load CoACD's native library with RTLD_DEEPBIND so its statically-linked spdlog resolves to its
+# own copy instead of binding to the ABI-incompatible spdlog exported by the ROCm runtime libraries
+# (e.g. librocroller.so), which torch/ROCm load globally above before CoACD is ever imported. Without
+# DEEPBIND, CoACD's `spdlog::registry::initialize_logger` ends up calling ROCm's
+# `spdlog::pattern_formatter::clone` and segfaults the first time CoACD logs (which happens during
+# convex decomposition in rigid-mesh post-processing). dlopen-ing the file here makes the later
+# `import coacd` reuse this DEEPBIND mapping.
+if sys.platform == "linux":
+    try:
+        import ctypes as _ctypes
+        import glob as _glob
+        from importlib.util import find_spec as _find_spec
+
+        _coacd_spec = _find_spec("coacd")
+        _coacd_dirs = list(getattr(_coacd_spec, "submodule_search_locations", None) or [])
+        _deepbind = getattr(os, "RTLD_DEEPBIND", 0)
+        for _coacd_dir in _coacd_dirs:
+            for _coacd_lib in _glob.glob(os.path.join(_coacd_dir, "lib*coacd*.so*")):
+                _ctypes.CDLL(_coacd_lib, mode=os.RTLD_NOW | os.RTLD_LOCAL | _deepbind)
+    except Exception:
+        pass
+
 # Eagerly load native extensions under redirected stderr to silence dlopen-time noise (e.g. macOS
 # objc duplicate-class warnings when several libraries ship their own copy of GLFW).
 with open(os.devnull, "w") as stderr, redirect_libc_stderr(stderr):
