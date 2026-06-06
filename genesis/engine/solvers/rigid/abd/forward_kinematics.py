@@ -404,60 +404,62 @@ def func_COM_links_entity(
             rigid_global_info.EPS[None],
         )
 
-    for i_l in range(entities_info.link_start[i_e], entities_info.link_end[i_e]):
-        I_l = [i_l, i_b] if qd.static(static_rigid_sim_config.batch_links_info) else i_l
+    # j_pos/j_quat are only read by the backward adjoint cache; skip in forward-only mode.
+    if qd.static(static_rigid_sim_config.requires_grad):
+        for i_l in range(entities_info.link_start[i_e], entities_info.link_end[i_e]):
+            I_l = [i_l, i_b] if qd.static(static_rigid_sim_config.batch_links_info) else i_l
 
-        if links_info.n_dofs[I_l] > 0:
-            i_p = links_info.parent_idx[I_l]
+            if links_info.n_dofs[I_l] > 0:
+                i_p = links_info.parent_idx[I_l]
 
-            _i_j = links_info.joint_start[I_l]
-            _I_j = [_i_j, i_b] if qd.static(static_rigid_sim_config.batch_joints_info) else _i_j
-            joint_type = joints_info.type[_I_j]
+                _i_j = links_info.joint_start[I_l]
+                _I_j = [_i_j, i_b] if qd.static(static_rigid_sim_config.batch_joints_info) else _i_j
+                joint_type = joints_info.type[_I_j]
 
-            p_pos = qd.Vector.zero(gs.qd_float, 3)
-            p_quat = gu.qd_identity_quat()
-            if i_p != -1:
-                p_pos = links_state.pos[i_p, i_b]
-                p_quat = links_state.quat[i_p, i_b]
+                p_pos = qd.Vector.zero(gs.qd_float, 3)
+                p_quat = gu.qd_identity_quat()
+                if i_p != -1:
+                    p_pos = links_state.pos[i_p, i_b]
+                    p_quat = links_state.quat[i_p, i_b]
 
-            if joint_type == gs.JOINT_TYPE.FREE or (links_info.is_fixed[I_l] and i_p == -1):
-                links_state.j_pos[i_l, i_b] = links_state.pos[i_l, i_b]
-                links_state.j_quat[i_l, i_b] = links_state.quat[i_l, i_b]
-            else:
-                (
-                    links_state.j_pos_bw[i_l, 0, i_b],
-                    links_state.j_quat_bw[i_l, 0, i_b],
-                ) = gu.qd_transform_pos_quat_by_trans_quat(links_info.pos[I_l], links_info.quat[I_l], p_pos, p_quat)
+                if joint_type == gs.JOINT_TYPE.FREE or (links_info.is_fixed[I_l] and i_p == -1):
+                    links_state.j_pos[i_l, i_b] = links_state.pos[i_l, i_b]
+                    links_state.j_quat[i_l, i_b] = links_state.quat[i_l, i_b]
+                else:
+                    (
+                        links_state.j_pos_bw[i_l, 0, i_b],
+                        links_state.j_quat_bw[i_l, 0, i_b],
+                    ) = gu.qd_transform_pos_quat_by_trans_quat(links_info.pos[I_l], links_info.quat[I_l], p_pos, p_quat)
 
-                n_joints = links_info.joint_end[I_l] - links_info.joint_start[I_l]
+                    n_joints = links_info.joint_end[I_l] - links_info.joint_start[I_l]
 
-                for i_j_ in range(n_joints):
-                    i_j = i_j_ + links_info.joint_start[I_l]
+                    for i_j_ in range(n_joints):
+                        i_j = i_j_ + links_info.joint_start[I_l]
 
-                    curr_i_j = 0 if qd.static(not BW) else i_j_
-                    next_i_j = 0 if qd.static(not BW) else i_j_ + 1
+                        curr_i_j = 0 if qd.static(not BW) else i_j_
+                        next_i_j = 0 if qd.static(not BW) else i_j_ + 1
 
-                    if func_check_index_range(
-                        i_j,
-                        links_info.joint_start[I_l],
-                        links_info.joint_end[I_l],
-                        BW,
-                    ):
-                        I_j = [i_j, i_b] if qd.static(static_rigid_sim_config.batch_joints_info) else i_j
+                        if func_check_index_range(
+                            i_j,
+                            links_info.joint_start[I_l],
+                            links_info.joint_end[I_l],
+                            BW,
+                        ):
+                            I_j = [i_j, i_b] if qd.static(static_rigid_sim_config.batch_joints_info) else i_j
 
-                        (
-                            links_state.j_pos_bw[i_l, next_i_j, i_b],
-                            links_state.j_quat_bw[i_l, next_i_j, i_b],
-                        ) = gu.qd_transform_pos_quat_by_trans_quat(
-                            joints_info.pos[I_j],
-                            gu.qd_identity_quat(),
-                            links_state.j_pos_bw[i_l, curr_i_j, i_b],
-                            links_state.j_quat_bw[i_l, curr_i_j, i_b],
-                        )
+                            (
+                                links_state.j_pos_bw[i_l, next_i_j, i_b],
+                                links_state.j_quat_bw[i_l, next_i_j, i_b],
+                            ) = gu.qd_transform_pos_quat_by_trans_quat(
+                                joints_info.pos[I_j],
+                                gu.qd_identity_quat(),
+                                links_state.j_pos_bw[i_l, curr_i_j, i_b],
+                                links_state.j_quat_bw[i_l, curr_i_j, i_b],
+                            )
 
-                i_j_ = 0 if qd.static(not BW) else n_joints
-                links_state.j_pos[i_l, i_b] = links_state.j_pos_bw[i_l, i_j_, i_b]
-                links_state.j_quat[i_l, i_b] = links_state.j_quat_bw[i_l, i_j_, i_b]
+                    i_j_ = 0 if qd.static(not BW) else n_joints
+                    links_state.j_pos[i_l, i_b] = links_state.j_pos_bw[i_l, i_j_, i_b]
+                    links_state.j_quat[i_l, i_b] = links_state.j_quat_bw[i_l, i_j_, i_b]
 
     for i_l in range(entities_info.link_start[i_e], entities_info.link_end[i_e]):
         I_l = [i_l, i_b] if qd.static(static_rigid_sim_config.batch_links_info) else i_l
@@ -1523,65 +1525,67 @@ def func_com_pass6_joint_pose_link(
     BW = qd.static(is_backward)
     I_l = [i_l, i_b] if qd.static(static_rigid_sim_config.batch_links_info) else i_l
 
-    if links_info.n_dofs[I_l] > 0:
-        i_p = links_info.parent_idx[I_l]
+    # j_pos/j_quat are only read by the backward adjoint cache; skip in forward-only mode.
+    if qd.static(static_rigid_sim_config.requires_grad):
+        if links_info.n_dofs[I_l] > 0:
+            i_p = links_info.parent_idx[I_l]
 
-        _i_j = links_info.joint_start[I_l]
-        _I_j = [_i_j, i_b] if qd.static(static_rigid_sim_config.batch_joints_info) else _i_j
-        joint_type = joints_info.type[_I_j]
+            _i_j = links_info.joint_start[I_l]
+            _I_j = [_i_j, i_b] if qd.static(static_rigid_sim_config.batch_joints_info) else _i_j
+            joint_type = joints_info.type[_I_j]
 
-        p_pos = qd.Vector.zero(gs.qd_float, 3)
-        p_quat = gu.qd_identity_quat()
-        if i_p != -1:
-            p_pos = links_state.pos[i_p, i_b]
-            p_quat = links_state.quat[i_p, i_b]
+            p_pos = qd.Vector.zero(gs.qd_float, 3)
+            p_quat = gu.qd_identity_quat()
+            if i_p != -1:
+                p_pos = links_state.pos[i_p, i_b]
+                p_quat = links_state.quat[i_p, i_b]
 
-        if joint_type == gs.JOINT_TYPE.FREE or (links_info.is_fixed[I_l] and i_p == -1):
-            links_state.j_pos[i_l, i_b] = links_state.pos[i_l, i_b]
-            links_state.j_quat[i_l, i_b] = links_state.quat[i_l, i_b]
-        else:
-            acc_pos, acc_quat = gu.qd_transform_pos_quat_by_trans_quat(
-                links_info.pos[I_l], links_info.quat[I_l], p_pos, p_quat,
-            )
-            if qd.static(BW):
-                links_state.j_pos_bw[i_l, 0, i_b] = acc_pos
-                links_state.j_quat_bw[i_l, 0, i_b] = acc_quat
-
-            n_joints = links_info.joint_end[I_l] - links_info.joint_start[I_l]
-
-            for i_j_ in (
-                range(n_joints)
-                if qd.static(not BW)
-                else qd.static(range(static_rigid_sim_config.max_n_joints_per_link))
-            ):
-                i_j = i_j_ + links_info.joint_start[I_l]
-
-                if func_check_index_range(
-                    i_j,
-                    links_info.joint_start[I_l],
-                    links_info.joint_end[I_l],
-                    BW,
-                ):
-                    I_j = [i_j, i_b] if qd.static(static_rigid_sim_config.batch_joints_info) else i_j
-
-                    if qd.static(not BW):
-                        acc_pos = acc_pos + gu.qd_transform_by_quat(joints_info.pos[I_j], acc_quat)
-                    else:
-                        curr_i_j = i_j_
-                        next_i_j = i_j_ + 1
-                        prev_quat = links_state.j_quat_bw[i_l, curr_i_j, i_b]
-                        links_state.j_pos_bw[i_l, next_i_j, i_b] = (
-                            links_state.j_pos_bw[i_l, curr_i_j, i_b]
-                            + gu.qd_transform_by_quat(joints_info.pos[I_j], prev_quat)
-                        )
-                        links_state.j_quat_bw[i_l, next_i_j, i_b] = prev_quat
-
-            if qd.static(not BW):
-                links_state.j_pos[i_l, i_b] = acc_pos
-                links_state.j_quat[i_l, i_b] = acc_quat
+            if joint_type == gs.JOINT_TYPE.FREE or (links_info.is_fixed[I_l] and i_p == -1):
+                links_state.j_pos[i_l, i_b] = links_state.pos[i_l, i_b]
+                links_state.j_quat[i_l, i_b] = links_state.quat[i_l, i_b]
             else:
-                links_state.j_pos[i_l, i_b] = links_state.j_pos_bw[i_l, n_joints, i_b]
-                links_state.j_quat[i_l, i_b] = links_state.j_quat_bw[i_l, n_joints, i_b]
+                acc_pos, acc_quat = gu.qd_transform_pos_quat_by_trans_quat(
+                    links_info.pos[I_l], links_info.quat[I_l], p_pos, p_quat,
+                )
+                if qd.static(BW):
+                    links_state.j_pos_bw[i_l, 0, i_b] = acc_pos
+                    links_state.j_quat_bw[i_l, 0, i_b] = acc_quat
+
+                n_joints = links_info.joint_end[I_l] - links_info.joint_start[I_l]
+
+                for i_j_ in (
+                    range(n_joints)
+                    if qd.static(not BW)
+                    else qd.static(range(static_rigid_sim_config.max_n_joints_per_link))
+                ):
+                    i_j = i_j_ + links_info.joint_start[I_l]
+
+                    if func_check_index_range(
+                        i_j,
+                        links_info.joint_start[I_l],
+                        links_info.joint_end[I_l],
+                        BW,
+                    ):
+                        I_j = [i_j, i_b] if qd.static(static_rigid_sim_config.batch_joints_info) else i_j
+
+                        if qd.static(not BW):
+                            acc_pos = acc_pos + gu.qd_transform_by_quat(joints_info.pos[I_j], acc_quat)
+                        else:
+                            curr_i_j = i_j_
+                            next_i_j = i_j_ + 1
+                            prev_quat = links_state.j_quat_bw[i_l, curr_i_j, i_b]
+                            links_state.j_pos_bw[i_l, next_i_j, i_b] = (
+                                links_state.j_pos_bw[i_l, curr_i_j, i_b]
+                                + gu.qd_transform_by_quat(joints_info.pos[I_j], prev_quat)
+                            )
+                            links_state.j_quat_bw[i_l, next_i_j, i_b] = prev_quat
+
+                if qd.static(not BW):
+                    links_state.j_pos[i_l, i_b] = acc_pos
+                    links_state.j_quat[i_l, i_b] = acc_quat
+                else:
+                    links_state.j_pos[i_l, i_b] = links_state.j_pos_bw[i_l, n_joints, i_b]
+                    links_state.j_quat[i_l, i_b] = links_state.j_quat_bw[i_l, n_joints, i_b]
 
 
 @qd.func
