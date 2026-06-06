@@ -719,9 +719,9 @@ def func_factor_mass(
                         # FIXME: Diagonal coeffs of L are ignored in computations, so no need to update them.
                         rigid_global_info.mass_mat_L[i_d, i_d, i_b] = 1.0
         else:
-            BLOCK_DIM = qd.static(32)
+            BLOCK_DIM = qd.static(64)
             MAX_DOFS_PER_ENTITY = qd.static(static_rigid_sim_config.tiled_n_dofs_per_entity)
-            WARP_SIZE = qd.static(32)
+            WARP_SIZE = qd.static(64)
 
             qd.loop_config(name="factor_mass", block_dim=BLOCK_DIM)
             for i in range(n_entities * _B * BLOCK_DIM):
@@ -766,6 +766,11 @@ def func_factor_mass(
                             i_d_ = i_d_ + BLOCK_DIM
                         qd.simt.block.sync()
 
+                    # Pivot-row cache sized to the LDS tile so it is valid even when an entity
+                    # has more dofs than the wave width (n_dofs > BLOCK_DIM); the strided loops
+                    # below then cover the full row.
+                    sh_pivot = qd.simt.block.SharedArray((MAX_DOFS_PER_ENTITY,), gs.qd_float)
+
                     for j in range(n_dofs):
                         i_d_ = n_dofs - j - 1
                         i_d = entity_dof_end - j - 1
@@ -776,14 +781,46 @@ def func_factor_mass(
                             # FIXME: Diagonal coeffs of L are ignored in computations, so no need to update them.
                             rigid_global_info.mass_mat_L[i_d, i_d, i_b] = 1.0
 
-                        j_d_ = i_d_ - 1 - tid
-                        while j_d_ >= 0:
-                            a = mass_mat[i_d_, j_d_] * D_inv
-                            for k_d in range(j_d_ + 1):
-                                mass_mat[j_d_, k_d] = mass_mat[j_d_, k_d] - a * mass_mat[i_d_, k_d]
-                            mass_mat[i_d_, j_d_] = a
-                            j_d_ = j_d_ - BLOCK_DIM
-                        if qd.static(static_rigid_sim_config.backend == gs.cuda):
+                        # Cache the original pivot row into LDS before it is overwritten. On a
+                        # wave64 block (BLOCK_DIM=WARP_SIZE=64) all threads run in lockstep, so the
+                        # cache is visible to the cross-thread reads below without an extra barrier.
+                        # Fast single-store path when the tile fits one wave (the common case);
+                        # strided fallback keeps it correct for entities wider than BLOCK_DIM.
+                        if qd.static(MAX_DOFS_PER_ENTITY <= BLOCK_DIM):
+                            if tid < i_d_:
+                                sh_pivot[tid] = mass_mat[i_d_, tid]
+                        else:
+                            _p = tid
+                            while _p < i_d_:
+                                sh_pivot[_p] = mass_mat[i_d_, _p]
+                                _p = _p + BLOCK_DIM
+
+                        # Row-major rank-1 update: each thread owns rows [tid, tid+BLOCK_DIM, ...].
+                        # Reading the pivot from sh_pivot eliminates the per-update sqrt of the
+                        # flat-index decode and keeps sh_pivot[_r] in a register across the columns.
+                        _r = tid
+                        while _r < i_d_:
+                            piv_r = sh_pivot[_r] * D_inv
+                            _c = 0
+                            while _c <= _r:
+                                mass_mat[_r, _c] = mass_mat[_r, _c] - piv_r * sh_pivot[_c]
+                                _c = _c + 1
+                            _r = _r + BLOCK_DIM
+
+                        # Write L factors back to the pivot row.
+                        if qd.static(MAX_DOFS_PER_ENTITY <= BLOCK_DIM):
+                            if tid < i_d_:
+                                mass_mat[i_d_, tid] = sh_pivot[tid] * D_inv
+                        else:
+                            _p = tid
+                            while _p < i_d_:
+                                mass_mat[i_d_, _p] = sh_pivot[_p] * D_inv
+                                _p = _p + BLOCK_DIM
+
+                        if qd.static(
+                            static_rigid_sim_config.backend == gs.cuda
+                            or static_rigid_sim_config.backend == gs.amdgpu
+                        ):
                             if i_d_ <= WARP_SIZE:
                                 qd.simt.warp.sync(qd.u32(0xFFFFFFFF))
                             else:
