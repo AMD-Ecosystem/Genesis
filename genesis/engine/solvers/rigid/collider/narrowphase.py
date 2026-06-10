@@ -2040,7 +2040,10 @@ def func_narrow_phase_convex_vs_convex(
 ):
     _B = collider_state.active_buffer.shape[1]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    # ARBOR OPTIMIZATION (Patch D4): pin block_dim=64 to fill wave64 on gfx942.
+    # Default block_dim=32 masks 32 of 64 SIMD lanes. Each environment is independent,
+    # so 64 threads/workgroup covers 64 envs without data sharing.
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, block_dim=64)
     for i_b in range(_B):
         for i_pair in range(collider_state.n_broad_pairs[i_b]):
             i_ga = collider_state.broad_collision_pairs[i_pair, i_b][0]
@@ -2174,7 +2177,8 @@ def func_narrow_phase_convex_specializations(
     errno: array_class.V_ANNOTATION,
 ):
     _B = collider_state.active_buffer.shape[1]
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    # ARBOR OPTIMIZATION (Patch D4): block_dim=64 for wave64 lane utilization.
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, block_dim=64)
     for i_b in range(_B):
         for i_pair in range(collider_state.n_broad_pairs[i_b]):
             i_ga = collider_state.broad_collision_pairs[i_pair, i_b][0]
@@ -2238,7 +2242,8 @@ def func_narrow_phase_any_vs_terrain(
     Update2: Now we use n_broad_pairs instead of n_collision_pairs, so we probably need to think about how to handle non-batched large scene better.
     """
     _B = collider_state.active_buffer.shape[1]
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    # ARBOR OPTIMIZATION (Patch D4): block_dim=64 for wave64 lane utilization.
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, block_dim=64)
     for i_b in range(_B):
         for i_pair in range(collider_state.n_broad_pairs[i_b]):
             i_ga = collider_state.broad_collision_pairs[i_pair, i_b][0]
@@ -2293,7 +2298,8 @@ def func_narrow_phase_nonconvex_vs_nonterrain(
     EPS = rigid_global_info.EPS[None]
 
     _B = collider_state.active_buffer.shape[1]
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    # ARBOR OPTIMIZATION (Patch D4): block_dim=64 for wave64 lane utilization.
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, block_dim=64)
     for i_b in range(_B):
         for i_pair in range(collider_state.n_broad_pairs[i_b]):
             i_ga = collider_state.broad_collision_pairs[i_pair, i_b][0]

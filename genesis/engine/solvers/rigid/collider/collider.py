@@ -215,9 +215,21 @@ class Collider:
             def _round_up_64(n):
                 return (n + 63) & ~63
 
-            # AMD-specific optimization: mult=256 for multicontact kernel
+            # ARBOR OPTIMIZATION (Patch D2): AMD thread-count tuning for the multicontact kernel.
+            #
+            # Reduce the CU multiplier from 256 to 64 and increase max_items_per_thread from 128
+            # to 512, keeping total processing capacity identical:
+            #   capacity = n_threads x max_items_per_thread = constant
+            #   Original:  77 824 threads x 128 items = ~9.97 M
+            #   Tuned   :  19 456 threads x 512 items = ~9.97 M  (MI300X/MI325X: 304 CUs x 64)
+            #
+            # Rationale: at typical RL batch sizes (n_envs <= 8192, ~5 contacts each) the
+            # contact queue holds ~40 K entries. Launching 77 K wavefronts means most retire
+            # after a single "queue empty" check, wasting wave launch/retire overhead and
+            # harming IPC. Dropping to 19 K waves gives each wavefront ~2 real items of work,
+            # matching the MI300X/MI325X occupancy sweet-spot. CUDA behaviour is unchanged.
             if torch.version.hip:
-                multicontact_cuda_cores = gpu_props.multi_processor_count * 256
+                multicontact_cuda_cores = gpu_props.multi_processor_count * 64
             else:
                 multicontact_cuda_cores = gpu_cuda_cores
 
@@ -228,7 +240,10 @@ class Collider:
             else:
                 self._multicontact_n_gjk_threads = _round_up_64(multicontact_cuda_cores // 32)
                 self._multicontact_n_total_threads = multicontact_cuda_cores
-            self._multicontact_max_items_per_thread = 128
+            # Scale max_items_per_thread 4x to compensate for the 4x thread-count reduction
+            # on AMD (256->64), preserving total capacity (see rationale above).
+            # On CUDA the value is unchanged (gpu_cuda_cores already yields few threads).
+            self._multicontact_max_items_per_thread = 512 if torch.version.hip else 128
             self._multicontact_mpr_state = array_class.get_mpr_state(self._multicontact_n_total_threads)
 
     def _init_multicontact_gjk_state(self):
