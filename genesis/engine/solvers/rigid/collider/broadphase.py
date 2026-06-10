@@ -79,7 +79,8 @@ def func_collision_clear(
 ):
     _B = collider_state.n_contacts.shape[0]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    # ARBOR OPTIMIZATION (Patch D4): block_dim=64 for wave64 lane utilization on AMD.
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, block_dim=64)
     for i_b in range(_B):
         if qd.static(static_rigid_sim_config.use_hibernation):
             collider_state.n_contacts_hibernated[i_b] = 0
