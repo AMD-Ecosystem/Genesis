@@ -576,7 +576,15 @@ class RigidSolver(KinematicSolver):
         self.data_manager = array_class.DataManager(self, kinematic_only=False)
         self._errno = self.data_manager.errno
 
-        self._defer_errno = (gs.backend == gs.amdgpu) and gs.use_zerocopy
+        # NOTE: the deferred (double-buffered, async) errno check is currently unreliable on AMDGPU:
+        # ``kernel_bit_reduction_into`` can raise ``QuadrantsRuntimeTypeError`` and, when it does run,
+        # the pipelined read returns a stale / generation-mismatched slot so the OVERFLOW_COLLISION_PAIRS
+        # bit is dropped -- e.g. ``test_num_contact_overflow[gpu]`` generates ~1748 contacts against a 750
+        # buffer (overflow is genuinely set in ``self._errno``) yet the exception is never raised. The
+        # synchronous numpy reduction path (``np.bitwise_or.reduce(qd_to_numpy(self._errno))`` in
+        # ``check_errno``) reads the raw errno array directly and reports the overflow correctly, so route
+        # AMDGPU through it until the deferred kernel reduction is fixed.
+        self._defer_errno = False
         if gs.backend == gs.amdgpu and not gs.use_zerocopy:
             gs.logger.warning("Deferred check_errno path requires gs.use_zerocopy=True; falling back to the synchronous path.")
         if self._defer_errno:
