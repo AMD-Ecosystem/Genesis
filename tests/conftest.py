@@ -1,6 +1,7 @@
 import base64
 import ctypes
 import gc
+import json
 import logging
 import os
 import re
@@ -421,7 +422,39 @@ def pytest_xdist_auto_num_workers(config):
                     int(m.group(1)) for m in re.finditer(r"VRAM Total:\s+(\d+)\s*MiB", result.stdout)
                 )
             except (FileNotFoundError, subprocess.CalledProcessError):
-                pass
+                # Some ROCm images ship 'amd-smi' instead of 'rocm-smi'. Without this fallback,
+                # VRAM stays unknown ('inf'), the VRAM-based cap is disabled, and the number of
+                # workers collapses to the physical core count - massively oversubscribing a
+                # single GPU and causing kernel-launch timeouts under heavy contention.
+                try:
+                    result = subprocess.run(
+                        ["amd-smi", "static", "--vram", "--json"],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        check=True,
+                        text=True,
+                    )
+                    data = json.loads(result.stdout)
+                    if isinstance(data, dict):
+                        data = data.get("gpu_data", [])
+                    sizes = []
+                    for entry in data:
+                        size = entry.get("vram", {}).get("size", {})
+                        value = size.get("value") if isinstance(size, dict) else size
+                        if value:
+                            sizes.append(int(value))  # MB, close enough to MiB for this heuristic
+                    if sizes:
+                        devices_vram_memory = tuple(sizes)
+                except (
+                    FileNotFoundError,
+                    subprocess.CalledProcessError,
+                    ValueError,
+                    TypeError,
+                    KeyError,
+                    AttributeError,
+                    json.JSONDecodeError,
+                ):
+                    pass
         if devices_vram_memory is not None:
             assert len(set(devices_vram_memory)) == 1, "Heterogeneous Nvidia GPU devices not supported."
             num_gpus = len(devices_vram_memory)
@@ -438,8 +471,11 @@ def pytest_xdist_auto_num_workers(config):
                     device_property = torch.cuda.get_device_properties(device)
                     vram_memory += device_property.total_memory / 1024**3
             else:
-                # Ignore VRAM if no GPU is available
-                num_gpus = 0
+                # No nvidia-smi/rocm-smi/amd-smi was usable (e.g. minimal ROCm images). Determine
+                # the GPU count via a short-lived subprocess (so we never initialize CUDA/HIP in
+                # this process) and leave VRAM unbounded; the per-GPU worker cap below still
+                # prevents oversubscribing the device.
+                num_gpus = _query_torch_gpu_count_subprocess()
                 vram_memory = float("inf")
 
     # Compute the default number of workers based on available RAM, VRAM, and number of physical cores.
@@ -458,6 +494,19 @@ def pytest_xdist_auto_num_workers(config):
         max(ram_memory / ram_memory_per_worker, 1),
         max(vram_memory / vram_memory_per_worker, 1),
     )
+
+    # Cap the number of workers sharing each visible GPU. VRAM accounting alone is not enough:
+    # a single 256GB GPU would still allow ~100 workers, and that many processes contending for
+    # one device (compute + the on-disk kernel-compilation cache lock) makes heavy GPU tests blow
+    # past the pytest timeout. Empirically ~8 workers per GPU keeps these tests well under budget.
+    # The multiplier is based on the number of *visible* GPUs (what workers are actually pinned
+    # across via `_get_gpu_indices`), not the physical count `nvidia-smi`/`amd-smi` reports, since
+    # those tools ignore the CUDA/HIP/ROCR visibility masks used to restrict a run to fewer GPUs.
+    if num_gpus > 0 and sys.platform != "darwin":
+        max_workers_per_gpu = 8
+        visible_gpu_count = len(_get_gpu_indices())
+        if visible_gpu_count > 0:
+            num_workers = min(num_workers, visible_gpu_count * max_workers_per_gpu)
 
     # Special treatment for benchmarks
     expr = Expression.compile(config.option.markexpr)
