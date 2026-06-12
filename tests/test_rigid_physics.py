@@ -2782,13 +2782,7 @@ def test_contact_forces(show_viewer):
         contact_forces = tensor_to_array(cube.get_links_net_contact_force())
         errors = np.linalg.norm(contact_forces[:, 0, :] + cube_weight, ord=np.inf, axis=-1)
         all_errors.append(errors)
-    # On AMD GPU (FP32 + fast-math) the contact-force balance residual is nondeterministic, and a few
-    # of the randomized grasp orientations settle to a larger residual, so the 95th percentile
-    # straddles the 2e-4 bound and fails intermittently (measured p95 ~1.4e-4 to 4.2e-4 across runs on
-    # MI300X/MI325X, worst single sample ~1.9e-3, i.e. ~0.5% of the ~0.377 N held weight). Relax the
-    # bound on AMD to ~0.27% of the weight to avoid flakiness while still catching gross errors.
-    tol = 1e-3 if gs.backend == gs.amdgpu else 2e-4
-    assert np.percentile(all_errors, 95) < tol
+    assert np.percentile(all_errors, 95) < 2e-4
 
 
 @pytest.mark.required

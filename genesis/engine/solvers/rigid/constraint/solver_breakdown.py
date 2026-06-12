@@ -1047,7 +1047,12 @@ def _kernel_solve_graph(
 
 @solver.func_solve_body.register(
     is_compatible=lambda *args, **kwargs: (
-        not (static_rigid_sim_config := solver._get_static_config(*args, **kwargs)).requires_grad
+        # This CUDA-oriented graph-captured decomposed kernel is not wave64-tuned; on AMD it gets
+        # picked by perf_dispatch and produces an under-converged, noisy contact-force solution
+        # (test_contact_forces p95 ~4e-4 vs ~5e-6 here). AMD has its own variants in solver_amdgpu.py
+        # (the AMD-native decomposed is likewise disabled), so exclude AMD from this candidate.
+        gs.backend != gs.amdgpu
+        and not (static_rigid_sim_config := solver._get_static_config(*args, **kwargs)).requires_grad
         and static_rigid_sim_config.prefer_decomposed_solver != 0
     )
 )
