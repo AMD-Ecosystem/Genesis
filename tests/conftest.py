@@ -213,7 +213,15 @@ def pytest_sessionstart(session: pytest.Session) -> None:
             os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
             os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_index)
             os.environ["HIP_VISIBLE_DEVICES"] = str(gpu_index)
-            os.environ["ROCR_VISIBLE_DEVICES"] = str(gpu_index)
+            # NOTE: do NOT also set ROCR_VISIBLE_DEVICES here. On ROCm, ROCR_VISIBLE_DEVICES and
+            # HIP_VISIBLE_DEVICES are *layered* masks: ROCR filters physical->visible first (so
+            # physical GPU N becomes the only visible device, re-indexed to 0), then HIP indexes
+            # into that already-filtered list. Setting both to the same nonzero N double-masks down
+            # to zero visible devices (HIP looks for index N in a 1-element list), so
+            # ``torch.cuda.is_available()`` returns False in the worker and every gpu-parametrized
+            # test is skipped with "Backend 'gs.gpu' not available on this machine". Setting only
+            # HIP_VISIBLE_DEVICES (plus CUDA_VISIBLE_DEVICES, which Torch's ROCm build also honors)
+            # selects exactly one GPU without the double-mask. On NVIDIA these AMD vars are ignored.
             os.environ["QD_VISIBLE_DEVICE"] = str(gpu_index)
 
         # Limit CPU threading
