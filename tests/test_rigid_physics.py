@@ -3019,6 +3019,30 @@ def test_mass_mat_decompose_multi_env(show_viewer, tol):
 
 
 @pytest.mark.required
+def test_mass_mat_decompose_serial_path(show_viewer, tol):
+    """LDL^T reconstruction correctness on the serial (non-tiled) factor_mass path.
+
+    n_envs > 16384 disables enable_tiled_cholesky_mass_matrix, forcing the serial
+    Cholesky back-substitution path. Catches any layout regression in mass_mat_L
+    that would only surface on that code path.
+    """
+    n_envs = 16385
+    scene = gs.Scene(show_viewer=show_viewer, show_FPS=False)
+    scene.add_entity(gs.morphs.Plane())
+    robot = scene.add_entity(gs.morphs.MJCF(file="xml/franka_emika_panda/panda.xml"))
+    scene.build(n_envs=n_envs)
+
+    M_direct = robot.get_mass_mat(decompose=False)   # (n_envs, n_dofs, n_dofs)
+    M_L, M_D_inv = robot.get_mass_mat(decompose=True)
+
+    for i in range(3):  # spot-check 3 envs
+        L_i = M_L[i] if M_L.ndim == 3 else M_L
+        D_inv_i = M_D_inv[i] if M_D_inv.ndim == 2 else M_D_inv
+        M_reconstructed = L_i.T @ torch.diag(1.0 / D_inv_i) @ L_i
+        assert_allclose(M_reconstructed, M_direct[i], tol=1e-5)
+
+
+@pytest.mark.required
 @pytest.mark.parametrize("model_name", ["hinge_slide"])
 @pytest.mark.parametrize("gs_solver", [gs.constraint_solver.CG, gs.constraint_solver.Newton])
 @pytest.mark.parametrize("gs_integrator", [gs.integrator.implicitfast, gs.integrator.Euler])
