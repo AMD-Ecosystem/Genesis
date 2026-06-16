@@ -1091,6 +1091,109 @@ def func_solve_mass(
 
 
 @qd.func
+def func_solve_mass_coop_tiled(
+    vec: qd.Tensor,
+    out: qd.Tensor,
+    entities_info: array_class.EntitiesInfo,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: qd.template(),
+):
+    """Cooperative tiled forward M^-1 solve for AMDGPU (out = M^-1 @ vec).
+
+    The serial `func_solve_mass` launches 1 thread/env -> only ~n_envs/32
+    wavefronts (~2.6% occupancy at 8192 envs), leaving the GPU idle on the
+    dependent triangular-solve chain. This tiles 8 envs/block x 8 lanes/env (8x
+    the wavefronts) and reads mass_mat_L[i_b, p, k] with lanes over column k
+    (coalesced under the [env,row,col] layout), software-pipelined -- mirroring
+    the tiled_wc Phase 5b solve. Forward-only (no autodiff backward path).
+    """
+    BLOCK_DIM = qd.static(64)
+    COOP = qd.static(8)
+    ENVS = qd.static(8)
+    N_DOFS = qd.static(static_rigid_sim_config.n_dofs_)
+    N_BLOCKS = qd.static((static_rigid_sim_config.n_envs + 8 - 1) // 8)
+
+    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, block_dim=BLOCK_DIM)
+    for i_t in range(N_BLOCKS * BLOCK_DIM):
+        tid = i_t % BLOCK_DIM
+        block_id = i_t // BLOCK_DIM
+        env_in_block = tid // COOP
+        lane_in_env = tid % COOP
+        i_b = block_id * ENVS + env_in_block
+        msolve = qd.simt.block.SharedArray((ENVS, N_DOFS), gs.qd_float)
+        # OOB guard: never `continue` (would deadlock the workgroup syncs).
+        oob = i_b >= static_rigid_sim_config.n_envs
+
+        for i_e in range(qd.static(static_rigid_sim_config.n_entities_)):
+            e_ds = entities_info.dof_start[i_e]
+            e_de = entities_info.dof_end[i_e]
+            e_n = e_de - e_ds
+            do_e = False
+            if not oob:
+                do_e = bool(rigid_global_info.mass_mat_mask[i_e, i_b])
+
+            # load y -> LDS stripe
+            if do_e:
+                i_d = e_ds + lane_in_env
+                while i_d < e_de:
+                    msolve[env_in_block, i_d] = vec[i_d, i_b]
+                    i_d = i_d + COOP
+            qd.simt.block.sync()
+
+            # Step 1: solve L^T w = y (back-substitution), software-pipelined
+            for pp in range(e_n):
+                p = e_de - 1 - pp
+                if do_e:
+                    wp = msolve[env_in_block, p]
+                    k = e_ds + lane_in_env
+                    l_pf = gs.qd_float(0.0)
+                    if k < p:
+                        l_pf = rigid_global_info.mass_mat_L[i_b, p, k]
+                    while k < p:
+                        l_cur = l_pf
+                        k = k + COOP
+                        l_pf = gs.qd_float(0.0)
+                        if k < p:
+                            l_pf = rigid_global_info.mass_mat_L[i_b, p, k]
+                        msolve[env_in_block, k - COOP] = msolve[env_in_block, k - COOP] - l_cur * wp
+                qd.simt.block.sync()
+
+            # Step 2: z = D^{-1} w
+            if do_e:
+                i_d = e_ds + lane_in_env
+                while i_d < e_de:
+                    msolve[env_in_block, i_d] = msolve[env_in_block, i_d] * rigid_global_info.mass_mat_D_inv[i_d, i_b]
+                    i_d = i_d + COOP
+            qd.simt.block.sync()
+
+            # Step 3: solve L x = z (forward-substitution), software-pipelined
+            for pp in range(e_n):
+                p = e_ds + pp
+                if do_e:
+                    wp = msolve[env_in_block, p]
+                    k = p + 1 + lane_in_env
+                    l_pf = gs.qd_float(0.0)
+                    if k < e_de:
+                        l_pf = rigid_global_info.mass_mat_L[i_b, k, p]
+                    while k < e_de:
+                        l_cur = l_pf
+                        k = k + COOP
+                        l_pf = gs.qd_float(0.0)
+                        if k < e_de:
+                            l_pf = rigid_global_info.mass_mat_L[i_b, k, p]
+                        msolve[env_in_block, k - COOP] = msolve[env_in_block, k - COOP] - l_cur * wp
+                qd.simt.block.sync()
+
+            # store x -> out
+            if do_e:
+                i_d = e_ds + lane_in_env
+                while i_d < e_de:
+                    out[i_d, i_b] = msolve[env_in_block, i_d]
+                    i_d = i_d + COOP
+            qd.simt.block.sync()
+
+
+@qd.func
 def func_torque_and_passive_force(
     entities_state: array_class.EntitiesState,
     entities_info: array_class.EntitiesInfo,
@@ -1542,15 +1645,28 @@ def func_compute_qacc(
 ):
     BW = qd.static(is_backward)
 
-    func_solve_mass(
-        vec=dofs_state.force,
-        out=dofs_state.acc_smooth,
-        out_bw=dofs_state.acc_smooth_bw,
-        entities_info=entities_info,
-        rigid_global_info=rigid_global_info,
-        static_rigid_sim_config=static_rigid_sim_config,
-        is_backward=is_backward,
-    )
+    # Forward acc_smooth = M^-1 @ force. On AMDGPU the serial 1-thread/env solve
+    # is severely under-occupied (~2.6% at 8192 envs); use the cooperative tiled
+    # solve. Keep the serial path for the autodiff backward pass (cooperative
+    # version is forward-only) and non-AMDGPU backends.
+    if qd.static(static_rigid_sim_config.backend == gs.amdgpu and not is_backward):
+        func_solve_mass_coop_tiled(
+            dofs_state.force,
+            dofs_state.acc_smooth,
+            entities_info,
+            rigid_global_info,
+            static_rigid_sim_config,
+        )
+    else:
+        func_solve_mass(
+            vec=dofs_state.force,
+            out=dofs_state.acc_smooth,
+            out_bw=dofs_state.acc_smooth_bw,
+            entities_info=entities_info,
+            rigid_global_info=rigid_global_info,
+            static_rigid_sim_config=static_rigid_sim_config,
+            is_backward=is_backward,
+        )
 
     # Assume this is the outermost loop
     qd.loop_config(serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
