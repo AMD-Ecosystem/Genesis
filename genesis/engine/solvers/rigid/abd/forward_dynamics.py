@@ -349,8 +349,12 @@ def func_compute_mass_matrix_lds(
         f_vel_cache = qd.simt.block.SharedArray((KERNEL_MAX_DOFS_PER_ENTITY, 3), gs.qd_float)
         cdof_ang_cache = qd.simt.block.SharedArray((KERNEL_MAX_DOFS_PER_ENTITY, 3), gs.qd_float)
         cdof_vel_cache = qd.simt.block.SharedArray((KERNEL_MAX_DOFS_PER_ENTITY, 3), gs.qd_float)
+        # Packed lower-triangular storage. Only the lower triangle of this tile is ever
+        # written or read (the symmetric mirror below reads global memory, not this LDS),
+        # so storing n(n+1)/2 instead of n*n ~halves the dominant LDS term, raising
+        # occupancy (this kernel is occupancy/latency-bound: VALU ~19%, LDS-capped).
         mass_mat_local = qd.simt.block.SharedArray(
-            (KERNEL_MAX_DOFS_PER_ENTITY, KERNEL_MAX_DOFS_PER_ENTITY), gs.qd_float
+            (KERNEL_MAX_DOFS_PER_ENTITY * (KERNEL_MAX_DOFS_PER_ENTITY + 1) // 2,), gs.qd_float
         )
 
         # Cooperative loading into LDS
@@ -395,8 +399,8 @@ def func_compute_mass_matrix_lds(
                       f_vel_cache[i_d_, 1] * cdof_vel_cache[j_d_, 1] +
                       f_vel_cache[i_d_, 2] * cdof_vel_cache[j_d_, 2])
 
-            # Store in local matrix
-            mass_mat_local[i_d_, j_d_] = ang_dot + vel_dot
+            # Store in packed lower-triangular LDS (pair_idx == i_d_*(i_d_+1)/2 + j_d_)
+            mass_mat_local[pair_idx] = ang_dot + vel_dot
             pair_idx += BLOCK_DIM
 
         qd.simt.block.sync()
@@ -412,9 +416,9 @@ def func_compute_mass_matrix_lds(
             i_d_global = entity_dof_start + i_d_
             j_d_global = entity_dof_start + j_d_
 
-            # Apply masking and store
+            # Apply masking and store (global_pair_idx == i_d_*(i_d_+1)/2 + j_d_ = packed index)
             rigid_global_info.mass_mat[i_b, i_d_global, j_d_global] = (
-                mass_mat_local[i_d_, j_d_] * rigid_global_info.mass_parent_mask[i_d_global, j_d_global]
+                mass_mat_local[global_pair_idx] * rigid_global_info.mass_parent_mask[i_d_global, j_d_global]
             )
 
             global_pair_idx += BLOCK_DIM
