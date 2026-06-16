@@ -1647,9 +1647,16 @@ def func_compute_qacc(
 
     # Forward acc_smooth = M^-1 @ force. On AMDGPU the serial 1-thread/env solve
     # is severely under-occupied (~2.6% at 8192 envs); use the cooperative tiled
-    # solve. Keep the serial path for the autodiff backward pass (cooperative
-    # version is forward-only) and non-AMDGPU backends.
-    if qd.static(static_rigid_sim_config.backend == gs.amdgpu and not is_backward):
+    # solve. It is a block-cooperative kernel (block_dim + shared memory + block
+    # syncs), so it is only correct under a fully parallel launch (para_level == ALL,
+    # i.e. batched scenes); non-batched scenes (PARTIAL) would serialize it and break
+    # the cooperative reduction. Keep the serial path there, for the autodiff backward
+    # pass (cooperative version is forward-only), and for non-AMDGPU backends.
+    if qd.static(
+        static_rigid_sim_config.backend == gs.amdgpu
+        and not is_backward
+        and static_rigid_sim_config.para_level == gs.PARA_LEVEL.ALL
+    ):
         func_solve_mass_coop_tiled(
             dofs_state.force,
             dofs_state.acc_smooth,

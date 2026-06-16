@@ -3565,8 +3565,13 @@ def func_update_gradient_tiled(
             )
 
     if qd.static(static_rigid_sim_config.solver_type == gs.constraint_solver.CG):
-        if qd.static(static_rigid_sim_config.backend == gs.amdgpu):
-            # Cooperative tiled M^-1 solve (8 envs/block x 8 lanes/env). The serial
+        if qd.static(
+            static_rigid_sim_config.backend == gs.amdgpu
+            and static_rigid_sim_config.para_level == gs.PARA_LEVEL.ALL
+        ):
+            # Cooperative tiled M^-1 solve (8 envs/block x 8 lanes/env). Block-cooperative,
+            # so gated to fully-parallel (batched, para_level==ALL) launches; non-batched
+            # scenes fall back to the serial path below. The serial
             # 1-thread/env solve below leaves the GPU at ~2.6% occupancy at 8192
             # envs (idle on the dependent triangular-solve chain); the cooperative
             # tiling launches 8x the wavefronts with coalesced, pipelined
