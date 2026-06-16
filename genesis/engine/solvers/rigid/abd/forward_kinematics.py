@@ -1851,6 +1851,7 @@ def func_update_cartesian_space_entity(
     force_update_fixed_geoms: qd.template(),
     is_backward: qd.template(),
     include_com: qd.template(),
+    include_geoms: qd.template(),
     include_fk: qd.template(),
 ):
     # The non-hibernation forward launch level-schedules FK (func_fk_levels_split) for
@@ -1890,18 +1891,23 @@ def func_update_cartesian_space_entity(
             static_rigid_sim_config=static_rigid_sim_config,
             is_backward=is_backward,
         )
-    func_update_geoms_entity(
-        i_e,
-        i_b,
-        entities_info=entities_info,
-        geoms_state=geoms_state,
-        geoms_info=geoms_info,
-        links_state=links_state,
-        rigid_global_info=rigid_global_info,
-        static_rigid_sim_config=static_rigid_sim_config,
-        force_update_fixed_geoms=force_update_fixed_geoms,
-        is_backward=is_backward,
-    )
+    # Geom-pose update is dependency-free (each geom transformed by its link's already
+    # computed pose); the non-hibernation forward launch skips it here (include_geoms=
+    # False) and runs it afterwards as a per-geom-parallel sub-kernel for much higher
+    # occupancy, mirroring the CoM split above.
+    if qd.static(include_geoms):
+        func_update_geoms_entity(
+            i_e,
+            i_b,
+            entities_info=entities_info,
+            geoms_state=geoms_state,
+            geoms_info=geoms_info,
+            links_state=links_state,
+            rigid_global_info=rigid_global_info,
+            static_rigid_sim_config=static_rigid_sim_config,
+            force_update_fixed_geoms=force_update_fixed_geoms,
+            is_backward=is_backward,
+        )
 
 
 @qd.func
@@ -1949,8 +1955,9 @@ def func_update_cartesian_space_batch(
             static_rigid_sim_config,
             force_update_fixed_geoms,
             is_backward,
-            True,
-            True,
+            True,  # include_com
+            True,  # include_geoms
+            True,  # include_fk
         )
 
 
@@ -2041,6 +2048,9 @@ def func_update_cartesian_space(
                             force_update_fixed_geoms,
                             is_backward,
                             False,
+                            # include_geoms: inline only on the backward pass (the per-geom
+                            # split below covers the forward pass).
+                            is_backward,
                             # include_fk: serial chain walk only on the backward pass;
                             # the forward pass is handled by func_fk_levels_split above.
                             is_backward,
@@ -2060,6 +2070,26 @@ def func_update_cartesian_space(
             static_rigid_sim_config=static_rigid_sim_config,
             is_backward=is_backward,
         )
+
+        # Geom-pose update as a per-geom-parallel sub-kernel (forward pass). The poses
+        # only depend on the already-computed link transforms, so this launches
+        # n_geoms * n_envs threads instead of the one-thread-per-entity inline update,
+        # which was severely under-occupied at large batch sizes.
+        if qd.static(not BW):
+            qd.loop_config(
+                name="update_geoms_split",
+                serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL),
+                block_dim=64,
+            )
+            for i_g, i_b in qd.ndrange(geoms_state.pos.shape[0], links_state.pos.shape[1]):
+                if force_update_fixed_geoms or not geoms_info.is_fixed[i_g]:
+                    geoms_state.pos[i_g, i_b], geoms_state.quat[i_g, i_b] = gu.qd_transform_pos_quat_by_trans_quat(
+                        geoms_info.pos[i_g],
+                        geoms_info.quat[i_g],
+                        links_state.pos[geoms_info.link_idx[i_g], i_b],
+                        links_state.quat[geoms_info.link_idx[i_g], i_b],
+                    )
+                    geoms_state.verts_updated[i_g, i_b] = False
 
 
 @qd.kernel(fastcache=True)
