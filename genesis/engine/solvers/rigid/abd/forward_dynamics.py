@@ -628,26 +628,11 @@ def func_compute_mass_matrix(
                         (entities_info.dof_start[i_e], entities_info.dof_end[i_e]),
                         (entities_info.dof_start[i_e], entities_info.dof_end[i_e]),
                     ):
-                        rigid_global_info.mass_mat[i_b, i_d, j_d] = (
+                        val = (
                             dofs_state.f_ang[i_d, i_b].dot(dofs_state.cdof_ang[j_d, i_b])
                             + dofs_state.f_vel[i_d, i_b].dot(dofs_state.cdof_vel[j_d, i_b])
                         ) * rigid_global_info.mass_parent_mask[i_d, j_d]
-
-                        if func_check_index_range(
-                            i_d,
-                            entities_info.dof_start[i_e],
-                            entities_info.dof_end[i_e],
-                            BW,
-                        ) and func_check_index_range(
-                            j_d,
-                            entities_info.dof_start[i_e],
-                            entities_info.dof_end[i_e],
-                            BW,
-                        ):
-                            rigid_global_info.mass_mat[i_b, i_d, j_d] = (
-                                dofs_state.f_ang[i_d, i_b].dot(dofs_state.cdof_ang[j_d, i_b])
-                                + dofs_state.f_vel[i_d, i_b].dot(dofs_state.cdof_vel[j_d, i_b])
-                            ) * rigid_global_info.mass_parent_mask[i_d, j_d]
+                        rigid_global_info.mass_mat[i_b, i_d, j_d] = val
 
                     if qd.static(not BW):
                         _e_start_m = entities_info.dof_start[i_e]
@@ -681,15 +666,15 @@ def func_compute_mass_matrix(
         qd.loop_config(name="impint_order_1_corr", serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
         for i_d, i_b in qd.ndrange(dofs_state.f_ang.shape[0], links_state.pos.shape[1]):
             I_d = [i_d, i_b] if qd.static(static_rigid_sim_config.batch_dofs_info) else i_d
+            # Single write: combine damping and (conditional) act_bias correction to avoid
+            # a double-write on a needs_grad field, which would drop the first write's gradient.
             rigid_global_info.mass_mat[i_b, i_d, i_d] = (
-                rigid_global_info.mass_mat[i_b, i_d, i_d] + dofs_info.damping[I_d] * rigid_global_info.substep_dt[None]
+                rigid_global_info.mass_mat[i_b, i_d, i_d]
+                + dofs_info.damping[I_d] * rigid_global_info.substep_dt[None]
+                - dofs_info.act_bias[I_d][2]
+                * rigid_global_info.substep_dt[None]
+                * (1.0 if dofs_state.ctrl_mode[i_d, i_b] <= gs.CTRL_MODE.VELOCITY else 0.0)
             )
-            if dofs_state.ctrl_mode[i_d, i_b] <= gs.CTRL_MODE.VELOCITY:
-                # qM += d qfrc_actuator / d qvel = -act_bias[2] * dt
-                rigid_global_info.mass_mat[i_b, i_d, i_d] = (
-                    rigid_global_info.mass_mat[i_b, i_d, i_d]
-                    - dofs_info.act_bias[I_d][2] * rigid_global_info.substep_dt[None]
-                )
 
 
 @qd.func
@@ -724,16 +709,16 @@ def func_factor_mass(
 
                         if qd.static(implicit_damping):
                             I_d = [i_d, i_b] if qd.static(static_rigid_sim_config.batch_dofs_info) else i_d
-                            rigid_global_info.mass_mat_L[i_b, i_d, i_d] = (
-                                rigid_global_info.mass_mat_L[i_b, i_d, i_d]
-                                + dofs_info.damping[I_d] * rigid_global_info.substep_dt[None]
-                            )
+                            diag_delta = dofs_info.damping[I_d] * rigid_global_info.substep_dt[None]
                             if qd.static(static_rigid_sim_config.integrator == gs.integrator.implicitfast):
-                                if dofs_state.ctrl_mode[i_d, i_b] <= gs.CTRL_MODE.VELOCITY:
-                                    rigid_global_info.mass_mat_L[i_b, i_d, i_d] = (
-                                        rigid_global_info.mass_mat_L[i_b, i_d, i_d]
-                                        - dofs_info.act_bias[I_d][2] * rigid_global_info.substep_dt[None]
-                                    )
+                                # Single write: fold act_bias correction into the same expression to avoid
+                                # a double-write on a needs_grad field, which would drop the first gradient.
+                                diag_delta = diag_delta - dofs_info.act_bias[I_d][2] * rigid_global_info.substep_dt[
+                                    None
+                                ] * (1.0 if dofs_state.ctrl_mode[i_d, i_b] <= gs.CTRL_MODE.VELOCITY else 0.0)
+                            rigid_global_info.mass_mat_L[i_b, i_d, i_d] = (
+                                rigid_global_info.mass_mat_L[i_b, i_d, i_d] + diag_delta
+                            )
 
                     for i_d_ in range(n_dofs):
                         i_d = entity_dof_end - i_d_ - 1
