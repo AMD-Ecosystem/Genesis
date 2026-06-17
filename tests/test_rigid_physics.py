@@ -3043,6 +3043,112 @@ def test_mass_mat_decompose_serial_path(show_viewer, tol):
 
 
 @pytest.mark.required
+@pytest.mark.parametrize("backend", [gs.cpu])
+def test_dynamic_entity_window_selection(show_viewer):
+    """OPT-1: the contiguous dynamic-entity window (offset, count) is selected correctly.
+
+    The CRBA/factor kernels launch one block per (entity, env); restricting the grid to the
+    block of entities that own DOFs skips static 0-DOF entities (e.g. a ground Plane). This
+    asserts the window the kernels read (`_static_rigid_sim_config.{dynamic_entity_offset_,
+    n_dynamic_entities_}`) for every entity layout, including the fallbacks that must use the
+    full range (count <= 0). Without this, a regression that always returned the fallback would
+    silently disable the optimization while leaving every other test green. The window is
+    computed at build time, independent of backend, so a cheap CPU build suffices.
+    """
+    franka = "xml/franka_emika_panda/panda.xml"
+
+    def window_for(add_entities):
+        scene = gs.Scene(show_viewer=show_viewer, show_FPS=False)
+        add_entities(scene)
+        scene.build(n_envs=2)
+        cfg = scene.rigid_solver._static_rigid_sim_config
+        dofs = [e.n_dofs for e in scene.rigid_solver.entities]
+        return dofs, cfg.dynamic_entity_offset_, cfg.n_dynamic_entities_
+
+    def plane_then_robot(scene):
+        scene.add_entity(gs.morphs.Plane())
+        scene.add_entity(gs.morphs.MJCF(file=franka))
+
+    def robot_only(scene):
+        scene.add_entity(gs.morphs.MJCF(file=franka))
+
+    def robot_then_plane(scene):
+        scene.add_entity(gs.morphs.MJCF(file=franka))
+        scene.add_entity(gs.morphs.Plane())
+
+    def two_static_then_robot(scene):
+        scene.add_entity(gs.morphs.Plane())
+        scene.add_entity(gs.morphs.Box(size=(0.2, 0.2, 0.2), pos=(2.0, 2.0, 2.0), fixed=True))
+        scene.add_entity(gs.morphs.MJCF(file=franka))
+
+    def noncontiguous(scene):
+        scene.add_entity(gs.morphs.MJCF(file=franka))
+        scene.add_entity(gs.morphs.Plane())
+        scene.add_entity(gs.morphs.MJCF(file=franka))
+
+    # Leading 0-DOF entity skipped: window starts at the robot.
+    assert window_for(plane_then_robot) == ([0, 9], 1, 1)
+    # Trailing 0-DOF entity skipped: window covers only the leading robot.
+    assert window_for(robot_then_plane) == ([9, 0], 0, 1)
+    # Two leading static entities skipped.
+    assert window_for(two_static_then_robot) == ([0, 0, 9], 2, 1)
+    # Nothing to skip -> unset (count <= 0), kernels use the full n_entities_ range.
+    assert window_for(robot_only) == ([9], 0, -1)
+    # Non-contiguous dynamic entities -> fallback to the full range (a single window would
+    # skip the real DOF block sitting between the two robots).
+    assert window_for(noncontiguous) == ([9, 0, 9], 0, -1)
+
+
+@pytest.mark.required
+@pytest.mark.parametrize("precision", ["32"])
+@pytest.mark.parametrize("backend", [gs.gpu])
+def test_dynamic_entity_window_kernel_equivalence(show_viewer, tol):
+    """OPT-1: GPU mass matrix is bit-for-bit unchanged whether the dynamic-entity window is on.
+
+    The windowed CRBA/factor kernels (offset entity grid) must produce exactly the same M, L and
+    D_inv as the full-range kernels. Build the same Plane+robot scene twice — once with the window
+    active (default), once with it forced off (full n_entities_ range) — step both and compare the
+    decomposed mass matrix. This is the correctness guarantee for the launched-grid change: it only
+    removes 0-DOF blocks, it must not perturb the numerics.
+    """
+    import genesis.engine.solvers
+
+    build_orig = genesis.engine.solvers.RigidSolver.build
+
+    def build_scene(force_window_off):
+        def patched_build(self):
+            build_orig(self)
+            if force_window_off:
+                # Disable the window -> kernels fall back to the full padded n_entities_ range,
+                # re-including the static Plane's (no-op) blocks. Mathematically identical work.
+                self._static_rigid_sim_config.n_dynamic_entities_ = -1
+                self._static_rigid_sim_config.dynamic_entity_offset_ = 0
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("genesis.engine.solvers.RigidSolver.build", patched_build)
+            scene = gs.Scene(show_viewer=show_viewer, show_FPS=False)
+            scene.add_entity(gs.morphs.Plane())
+            robot = scene.add_entity(gs.morphs.MJCF(file="xml/franka_emika_panda/panda.xml"))
+            scene.build(n_envs=4)
+            cfg = scene.rigid_solver._static_rigid_sim_config
+            scene.step()
+            M_L, M_D_inv = robot.get_mass_mat(decompose=True)
+        return cfg.n_dynamic_entities_, cfg.dynamic_entity_offset_, tensor_to_array(M_L), tensor_to_array(M_D_inv)
+
+    n_dyn_on, off_on, L_on, Dinv_on = build_scene(force_window_off=False)
+    n_dyn_off, off_off, L_off, Dinv_off = build_scene(force_window_off=True)
+
+    # Guard the premise: the default build must actually engage the window (offset=1, count=1),
+    # otherwise this test would be comparing the fallback against itself and prove nothing.
+    assert (off_on, n_dyn_on) == (1, 1), f"window not engaged: offset={off_on}, count={n_dyn_on}"
+    assert n_dyn_off == -1, f"window not disabled in control build: count={n_dyn_off}"
+
+    # Removing the static Plane's blocks must not change the numbers at all.
+    assert_allclose(L_on, L_off, tol=0)
+    assert_allclose(Dinv_on, Dinv_off, tol=0)
+
+
+@pytest.mark.required
 @pytest.mark.parametrize("model_name", ["hinge_slide"])
 @pytest.mark.parametrize("gs_solver", [gs.constraint_solver.CG, gs.constraint_solver.Newton])
 @pytest.mark.parametrize("gs_integrator", [gs.integrator.implicitfast, gs.integrator.Euler])

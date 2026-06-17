@@ -310,7 +310,17 @@ def func_compute_mass_matrix_lds(
 
     n_entities = static_rigid_sim_config.n_entities_
     _B = static_rigid_sim_config.n_envs
-    n_thread_entities = static_rigid_sim_config.n_entities_ if qd.static(static_rigid_sim_config.use_hibernation) else n_entities
+    # OPT-1: when a contiguous dynamic-entity window is set (hibernation off), launch only over that
+    # window and offset the entity index, skipping static 0-DOF entities.
+    _HAS_WINDOW = qd.static(
+        static_rigid_sim_config.n_dynamic_entities_ > 0 and not static_rigid_sim_config.use_hibernation
+    )
+    _ENTITY_BASE = qd.static(static_rigid_sim_config.dynamic_entity_offset_ if _HAS_WINDOW else 0)
+    n_thread_entities = (
+        qd.static(static_rigid_sim_config.n_dynamic_entities_)
+        if _HAS_WINDOW
+        else (static_rigid_sim_config.n_entities_ if qd.static(static_rigid_sim_config.use_hibernation) else n_entities)
+    )
 
     qd.loop_config(block_dim=BLOCK_DIM)
     for i in range(n_thread_entities * _B * BLOCK_DIM):
@@ -321,7 +331,7 @@ def func_compute_mass_matrix_lds(
         if i_b >= _B:
             continue
 
-        i_e = i_e_local
+        i_e = i_e_local + _ENTITY_BASE
 
         if qd.static(static_rigid_sim_config.use_hibernation):
             if not func_check_index_range(
@@ -745,11 +755,17 @@ def func_factor_mass(
             MAX_DOFS_PER_ENTITY = qd.static(static_rigid_sim_config.tiled_n_dofs_per_entity)
             WARP_SIZE = qd.static(64)
 
+            # OPT-1: restrict the (entity, env) grid to the contiguous dynamic-entity window when set,
+            # skipping static 0-DOF entities (their factor is a no-op but still launches a block).
+            _HAS_WINDOW = qd.static(static_rigid_sim_config.n_dynamic_entities_ > 0)
+            _ENTITY_BASE = qd.static(static_rigid_sim_config.dynamic_entity_offset_ if _HAS_WINDOW else 0)
+            n_grid_entities = qd.static(static_rigid_sim_config.n_dynamic_entities_) if _HAS_WINDOW else n_entities
+
             qd.loop_config(name="factor_mass", block_dim=BLOCK_DIM)
-            for i in range(n_entities * _B * BLOCK_DIM):
+            for i in range(n_grid_entities * _B * BLOCK_DIM):
                 tid = i % BLOCK_DIM
-                i_e = (i // BLOCK_DIM) % n_entities
-                i_b = i // (BLOCK_DIM * n_entities)
+                i_e = (i // BLOCK_DIM) % n_grid_entities + _ENTITY_BASE
+                i_b = i // (BLOCK_DIM * n_grid_entities)
                 if i_b >= _B:
                     continue
 
