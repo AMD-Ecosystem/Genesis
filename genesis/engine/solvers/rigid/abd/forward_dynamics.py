@@ -1214,13 +1214,26 @@ def func_torque_and_passive_force(
 ):
     BW = qd.static(is_backward)
 
-    # compute force based on each dof's ctrl mode
+    # compute force based on each dof's ctrl mode. The non-hibernation launch runs
+    # this per-link-parallel (ndrange(n_links, _B)) instead of one-thread-per-entity
+    # walking every link serially -- much higher occupancy at large batch sizes, and
+    # the per-link applied force is independent so this is a flat relaunch (no extra
+    # launches, no cross-link dependency). The hibernation path keeps the per-entity
+    # walk because it needs the per-entity wakeup reduction.
     qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
-    for i_e, i_b in qd.ndrange(entities_info.n_links.shape[0], dofs_state.ctrl_mode.shape[1]):
+    for i_x, i_b in (
+        qd.ndrange(entities_info.n_links.shape[0], dofs_state.ctrl_mode.shape[1])
+        if qd.static(static_rigid_sim_config.use_hibernation)
+        else qd.ndrange(links_info.root_idx.shape[0], dofs_state.ctrl_mode.shape[1])
+    ):
         EPS = rigid_global_info.EPS[None]
 
         wakeup = False
-        for i_l in range(entities_info.link_start[i_e], entities_info.link_end[i_e]):
+        for i_l in (
+            range(entities_info.link_start[i_x], entities_info.link_end[i_x])
+            if qd.static(static_rigid_sim_config.use_hibernation)
+            else range(i_x, i_x + 1)
+        ):
             I_l = [i_l, i_b] if qd.static(static_rigid_sim_config.batch_links_info) else i_l
             if links_info.n_dofs[I_l] > 0:
                 i_j = links_info.joint_start[I_l]
@@ -1303,10 +1316,10 @@ def func_torque_and_passive_force(
                             wakeup = True
 
         if qd.static(static_rigid_sim_config.use_hibernation):
-            if entities_state.hibernated[i_e, i_b] and wakeup:
+            if entities_state.hibernated[i_x, i_b] and wakeup:
                 # TODO: migrate this function
                 func_wakeup_entity_and_its_temp_island(
-                    i_e,
+                    i_x,
                     i_b,
                     entities_state,
                     entities_info,
