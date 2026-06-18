@@ -3149,6 +3149,111 @@ def test_dynamic_entity_window_kernel_equivalence(show_viewer, tol):
 
 
 @pytest.mark.required
+@pytest.mark.parametrize("precision", ["32"])
+@pytest.mark.parametrize("backend", [gs.gpu])
+def test_mass_matrix_lds_packed_equivalence(show_viewer, tol):
+    """OPT-2: the 1D packed-lower-triangle LDS layout matches the non-tiled reference path.
+
+    The tiled GPU path stores the per-entity mass matrix in LDS as a 1D packed lower triangle
+    (func_compute_mass_matrix_lds) and factorizes it in place (func_factor_mass), instead of a
+    2D square SharedArray. That is purely a storage-layout change for occupancy — it must yield
+    exactly the same decomposed M (L, D_inv) as the untiled path that assembles the full square
+    matrix in HBM. Build the same Plane+robot scene twice — once with the tiled LDS path engaged
+    (default for this DOF count on GPU), once forced off — step both and compare bit-for-bit.
+
+    Without this, a packing/indexing bug (wrong pair_idx, a dropped off-diagonal, a bank-padding
+    regression) could corrupt the mass matrix while leaving the build-time window tests green.
+    """
+    import genesis.engine.solvers
+
+    build_orig = genesis.engine.solvers.RigidSolver.build
+
+    def build_scene(force_tiled_off):
+        def patched_build(self):
+            build_orig(self)
+            if force_tiled_off:
+                # Disable the tiled LDS path -> mass matrix is assembled in the untiled HBM path.
+                # Mathematically identical; exercises the reference layout instead of the packed one.
+                self._static_rigid_sim_config.enable_tiled_cholesky_mass_matrix = False
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("genesis.engine.solvers.RigidSolver.build", patched_build)
+            scene = gs.Scene(show_viewer=show_viewer, show_FPS=False)
+            scene.add_entity(gs.morphs.Plane())
+            robot = scene.add_entity(gs.morphs.MJCF(file="xml/franka_emika_panda/panda.xml"))
+            scene.build(n_envs=4)
+            tiled = scene.rigid_solver._static_rigid_sim_config.enable_tiled_cholesky_mass_matrix
+            scene.step()
+            M_L, M_D_inv = robot.get_mass_mat(decompose=True)
+        return tiled, tensor_to_array(M_L), tensor_to_array(M_D_inv)
+
+    tiled_on, L_on, Dinv_on = build_scene(force_tiled_off=False)
+    tiled_off, L_off, Dinv_off = build_scene(force_tiled_off=True)
+
+    # Guard the premise: the default build must actually engage the tiled LDS-packed path,
+    # otherwise this would compare the untiled path against itself and prove nothing.
+    assert tiled_on, "tiled LDS-packed path not engaged in default build — test proves nothing"
+    assert not tiled_off, "tiled path not disabled in control build"
+
+    # The packed-triangle storage must be numerically identical to the square reference.
+    assert_allclose(L_on, L_off, tol=tol)
+    assert_allclose(Dinv_on, Dinv_off, tol=tol)
+
+
+@pytest.mark.required
+@pytest.mark.parametrize("precision", ["32"])
+@pytest.mark.parametrize("backend", [gs.gpu])
+def test_fk_dynamic_entity_window_equivalence(show_viewer, tol):
+    """OPT-2: windowing the FK kernels over dynamic entities does not change link kinematics.
+
+    The 0-DOF entity window was extended to the forward-kinematics kernels func_forward_velocity
+    and func_update_cartesian_space, whose outer ndrange previously iterated all entities including
+    the static ground Plane. Skipping the Plane's blocks (its links are fixed; FK outputs constant)
+    must leave every dynamic link's world pose, orientation and spatial velocity unchanged.
+
+    Build the same Plane+robot scene twice — window on (default) vs forced off (full entity range)
+    — step several times so velocities are non-trivial, and compare the robot links' pos/quat/vel.
+    """
+    import genesis.engine.solvers
+
+    build_orig = genesis.engine.solvers.RigidSolver.build
+
+    def build_scene(force_window_off):
+        def patched_build(self):
+            build_orig(self)
+            if force_window_off:
+                self._static_rigid_sim_config.n_dynamic_entities_ = -1
+                self._static_rigid_sim_config.dynamic_entity_offset_ = 0
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("genesis.engine.solvers.RigidSolver.build", patched_build)
+            scene = gs.Scene(show_viewer=show_viewer, show_FPS=False)
+            scene.add_entity(gs.morphs.Plane())
+            robot = scene.add_entity(gs.morphs.MJCF(file="xml/franka_emika_panda/panda.xml"))
+            scene.build(n_envs=4)
+            cfg = scene.rigid_solver._static_rigid_sim_config
+            # Give the arm a velocity so func_forward_velocity produces non-zero output to compare.
+            robot.set_dofs_velocity(np.ones((4, robot.n_dofs)))
+            for _ in range(5):
+                scene.step()
+            pos = tensor_to_array(robot.get_links_pos())
+            quat = tensor_to_array(robot.get_links_quat())
+            vel = tensor_to_array(robot.get_links_vel())
+        return cfg.n_dynamic_entities_, cfg.dynamic_entity_offset_, pos, quat, vel
+
+    n_dyn_on, off_on, pos_on, quat_on, vel_on = build_scene(force_window_off=False)
+    n_dyn_off, _, pos_off, quat_off, vel_off = build_scene(force_window_off=True)
+
+    # Guard the premise: the default build must engage the window (skip the leading Plane).
+    assert (off_on, n_dyn_on) == (1, 1), f"FK window not engaged: offset={off_on}, count={n_dyn_on}"
+    assert n_dyn_off == -1, f"window not disabled in control build: count={n_dyn_off}"
+
+    assert_allclose(pos_on, pos_off, tol=tol)
+    assert_allclose(quat_on, quat_off, tol=tol)
+    assert_allclose(vel_on, vel_off, tol=tol)
+
+
+@pytest.mark.required
 @pytest.mark.parametrize("model_name", ["hinge_slide"])
 @pytest.mark.parametrize("gs_solver", [gs.constraint_solver.CG, gs.constraint_solver.Newton])
 @pytest.mark.parametrize("gs_integrator", [gs.integrator.implicitfast, gs.integrator.Euler])
