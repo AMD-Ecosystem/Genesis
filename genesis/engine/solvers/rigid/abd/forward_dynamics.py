@@ -1094,6 +1094,17 @@ def func_solve_mass(
         )
 
 
+# Upper bound on total scene DOFs for the cooperative tiled M^-1 solve. The kernel
+# stages the whole flat DOF vector for 8 envs in LDS (msolve = 8 x n_dofs_ floats =
+# 32 * n_dofs_ bytes). gfx942 has 64 KB LDS/workgroup, so at n_dofs_ > 2048 the tile
+# no longer fits (launch/compile failure) and well before that it caps occupancy
+# (n_dofs_=512 -> 16 KB -> 4 WG/CU). Large-DOF / multi-entity batched scenes above
+# this bound fall back to the serial func_solve_mass / func_solve_mass_batch, which
+# use no oversized LDS and handle arbitrary DOF counts. 512 keeps the tile <=16 KB
+# (>=4 WG/CU on LDS) while comfortably covering the single-/few-robot batched regime.
+COOP_MASS_SOLVE_MAX_DOFS = 512
+
+
 @qd.func
 def func_solve_mass_coop_tiled(
     vec: qd.Tensor,
@@ -1673,6 +1684,7 @@ def func_compute_qacc(
         static_rigid_sim_config.backend == gs.amdgpu
         and not is_backward
         and static_rigid_sim_config.para_level == gs.PARA_LEVEL.ALL
+        and static_rigid_sim_config.n_dofs_ <= COOP_MASS_SOLVE_MAX_DOFS
     ):
         func_solve_mass_coop_tiled(
             dofs_state.force,
