@@ -2786,6 +2786,80 @@ def test_contact_forces(show_viewer):
 
 
 @pytest.mark.required
+@pytest.mark.parametrize("precision", ["32"])
+@pytest.mark.parametrize("backend", [gs.gpu])
+def test_contact_after_broadphase_separation_recollision(show_viewer):
+    # Regression guard for the broadphase optimization that stops zeroing
+    # contact_cache.normal for non-overlapping geom pairs (the stale normal is left as an
+    # MPR/GJK warm-start seed). It drives the exact lifecycle the optimization changes —
+    # contact -> full AABB separation (stale normal now persists) -> re-collision — and
+    # asserts both the re-derived contact normal direction AND the net force balance are
+    # physically correct on the second contact.
+    #
+    # SCOPE (verified by mutation testing): contact_cache.normal is only a convergence
+    # hint. The narrowphase always re-derives the true geometric normal, so injecting a
+    # deliberately wrong nonzero seed leaves the resulting normal bit-identical to clean
+    # ([0,0,-1]) and the force unchanged. This test therefore CANNOT distinguish a correct
+    # warm-start from a corrupted one — that invariance is itself the proof the
+    # optimization is safe. What it DOES guard is that the broadphase->narrowphase contact
+    # pipeline keeps producing correct contacts across a separation/re-collision cycle
+    # (e.g. a future change that let a stale normal suppress contact creation, or skipped
+    # re-derivation, would break it).
+    scene = gs.Scene(
+        sim_options=gs.options.SimOptions(dt=0.005),
+        rigid_options=gs.options.RigidOptions(box_box_detection=True),
+        show_viewer=show_viewer,
+        show_FPS=False,
+    )
+    scene.add_entity(gs.morphs.Plane())
+    box = scene.add_entity(
+        gs.morphs.Box(size=(0.1, 0.2, 0.3), pos=(0.0, 0.0, 0.15)),
+    )
+    scene.build(n_envs=2)
+
+    box_weight = -scene.rigid_solver._gravity[0][2] * box.get_mass()
+
+    def settle(pos, quat, n_settle=200):
+        box.set_pos(np.tile(pos, (scene.n_envs, 1)), zero_velocity=True)
+        box.set_quat(np.tile(quat, (scene.n_envs, 1)), zero_velocity=True)
+        for _ in range(n_settle):
+            scene.step()
+
+    def assert_resting_on_plane():
+        # Net upward contact force cancels gravity.
+        forces = tensor_to_array(box.get_links_net_contact_force())
+        assert_allclose(forces[:, 0, 2], box_weight, atol=2e-4)
+        # At least one valid contact exists, and every valid contact normal points along
+        # the plane's +Z axis (|n_z| ~ 1, n_x/n_y ~ 0). The collider reports the normal
+        # with either sign depending on geom ordering, so compare on the absolute z-axis.
+        contacts = box.get_contacts()
+        normal = tensor_to_array(contacts["normal"])
+        valid = tensor_to_array(contacts["valid_mask"]).astype(bool)
+        assert valid.any(axis=1).all(), "expected a valid contact in every env"
+        for i_env in range(scene.n_envs):
+            n = normal[i_env][valid[i_env]]
+            assert_allclose(np.abs(n[:, 2]), 1.0, atol=1e-3)
+            assert_allclose(n[:, :2], 0.0, atol=1e-3)
+
+    # Phase 1: rest flat — seeds an upward normal into contact_cache.
+    settle(pos=(0.0, 0.0, 0.15), quat=(1.0, 0.0, 0.0, 0.0))
+    assert_resting_on_plane()
+
+    # Phase 2: lift the box fully clear so the broadphase reports no overlap for several
+    # steps — under the optimization the seeded normal is NOT cleared and goes stale.
+    box.set_pos(np.tile((0.0, 0.0, 5.0), (scene.n_envs, 1)), zero_velocity=True)
+    for _ in range(20):
+        scene.step()
+
+    # Phase 3: re-collide, rotated 90° about X so the contacting face differs from the one
+    # that produced the stale seed. The contact must re-establish with the correct +Z
+    # normal and balanced force.
+    quat_x90 = np.array([np.cos(np.pi / 4), np.sin(np.pi / 4), 0.0, 0.0])
+    settle(pos=(0.0, 0.0, 0.1), quat=quat_x90)
+    assert_resting_on_plane()
+
+
+@pytest.mark.required
 @pytest.mark.parametrize("model_name", ["double_ball_pendulum"])
 def test_apply_external_forces(xml_path, show_viewer):
     GRAVITY = 2.0
