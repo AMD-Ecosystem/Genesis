@@ -2538,6 +2538,12 @@ def _kernel_solve_body_tiled_wc_amdgpu(
         # Per-env working vector for the cooperative LDL^T mass solve (Phase 5),
         # one N_DOFS stripe per env in the block (8 lanes/env cooperate on it).
         msolve_t = qd.simt.block.SharedArray((ENVS, N_DOFS), gs.qd_float)
+        # LDS cache for efc_force: 8 envs * 64 constraints = 512 floats = 2 KB.
+        # Filled cooperatively by 8 lanes in Phase 4a (already COOP-strided),
+        # read in Phase 4b inner loop to avoid N_DOFS * n_con HBM round-trips.
+        # Zero VGPR pressure vs the register-cache approach (Fix-4b).
+        TWC_LDS_MAX_CON = qd.static(64)
+        efc_force_lds = qd.simt.block.SharedArray((ENVS, TWC_LDS_MAX_CON), gs.qd_float)
 
         # Out-of-range guard (only the last block can have i_b >= _B
         # if _B isn't divisible by ENVS_PER_BLOCK; the is_compatible
@@ -2690,21 +2696,36 @@ def _kernel_solve_body_tiled_wc_amdgpu(
                         active_c = Jaref_c < 0
 
                     constraint_state.active[i_c, i_b] = active_c
-                    constraint_state.efc_force[i_c, i_b] = floss_force + (-Jaref_c * efc_D_c * active_c)
+                    efc_val = floss_force + (-Jaref_c * efc_D_c * active_c)
+                    constraint_state.efc_force[i_c, i_b] = efc_val
+                    # Cooperatively fill LDS while efc_val is hot in registers.
+                    if i_c < TWC_LDS_MAX_CON:
+                        efc_force_lds[env_in_block, i_c] = efc_val
 
                     my_cost_partial = (
                         my_cost_partial + floss_cost_local + 0.5 * Jaref_c * Jaref_c * efc_D_c * active_c
                     )
                     i_c = i_c + COOP
-            qd.simt.block.sync()
+            qd.simt.block.sync()  # ensures efc_force_lds fills visible to all lanes
 
             # 4b: per-dof qfrc_constraint = J^T @ efc_force.
+            # LDS cache: read from fast on-chip memory instead of HBM for each j_c.
+            # Saves N_DOFS * n_con HBM reads per CG iter with zero VGPR overhead.
             if is_active_env:
                 i_d = lane_in_env
                 while i_d < N_DOFS:
                     qfrc = gs.qd_float(0.0)
-                    for j_c in range(n_con):
-                        qfrc = qfrc + constraint_state.jac[j_c, i_d, i_b] * constraint_state.efc_force[j_c, i_b]
+                    # Fast path: LDS reads for up to TWC_LDS_MAX_CON constraints.
+                    # Use conditional accumulation (no break) for Quadrants compatibility.
+                    j_c_lds = 0
+                    while j_c_lds < TWC_LDS_MAX_CON and j_c_lds < n_con:
+                        qfrc = qfrc + constraint_state.jac[j_c_lds, i_d, i_b] * efc_force_lds[env_in_block, j_c_lds]
+                        j_c_lds = j_c_lds + 1
+                    # HBM tail for n_con > 64 (uncommon on humanoid robots)
+                    j_c_tail = TWC_LDS_MAX_CON
+                    while j_c_tail < n_con:
+                        qfrc = qfrc + constraint_state.jac[j_c_tail, i_d, i_b] * constraint_state.efc_force[j_c_tail, i_b]
+                        j_c_tail = j_c_tail + 1
                     constraint_state.qfrc_constraint[i_d, i_b] = qfrc
                     i_d = i_d + COOP
 
