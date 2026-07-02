@@ -2169,14 +2169,21 @@ def _func_ls_pt_3a_twc(
     t2_1 = gs.qd_float(0.0)
     t2_2 = gs.qd_float(0.0)
 
-    # Friction [ne, nef).
+    # Friction [ne, nef) -- LDS fast path, HBM fallback for n_con > 64.
     i_c = ne + lane_in_env
     while i_c < nef:
-        Jaref_c = constraint_state.Jaref[i_c, i_b]
-        jv_c = constraint_state.jv[i_c, i_b]
-        D = constraint_state.efc_D[i_c, i_b]
-        f = constraint_state.efc_frictionloss[i_c, i_b]
-        r = constraint_state.diag[i_c, i_b]
+        if i_c < LS3A_MAX_CON:
+            Jaref_c = Jaref3_lds[env_in_block, i_c]
+            jv_c = jv3_lds[env_in_block, i_c]
+            D = efc_D3_lds[env_in_block, i_c]
+            f = floss3_lds[env_in_block, i_c]
+            r = diag3_lds[env_in_block, i_c]
+        else:
+            Jaref_c = constraint_state.Jaref[i_c, i_b]
+            jv_c = constraint_state.jv[i_c, i_b]
+            D = constraint_state.efc_D[i_c, i_b]
+            f = constraint_state.efc_frictionloss[i_c, i_b]
+            r = constraint_state.diag[i_c, i_b]
         qf_0 = D * (0.5 * Jaref_c * Jaref_c)
         qf_1 = D * (jv_c * Jaref_c)
         qf_2 = D * (0.5 * jv_c * jv_c)
@@ -2219,12 +2226,17 @@ def _func_ls_pt_3a_twc(
         t2_2 = t2_2 + a2_qf_2
         i_c = i_c + COOP
 
-    # Contact [nef, n_con).
+    # Contact [nef, n_con) -- LDS fast path, HBM fallback for n_con > 64.
     i_c = nef + lane_in_env
     while i_c < n_con:
-        Jaref_c = constraint_state.Jaref[i_c, i_b]
-        jv_c = constraint_state.jv[i_c, i_b]
-        D = constraint_state.efc_D[i_c, i_b]
+        if i_c < LS3A_MAX_CON:
+            Jaref_c = Jaref3_lds[env_in_block, i_c]
+            jv_c = jv3_lds[env_in_block, i_c]
+            D = efc_D3_lds[env_in_block, i_c]
+        else:
+            Jaref_c = constraint_state.Jaref[i_c, i_b]
+            jv_c = constraint_state.jv[i_c, i_b]
+            D = constraint_state.efc_D[i_c, i_b]
         qf_0 = D * (0.5 * Jaref_c * Jaref_c)
         qf_1 = D * (jv_c * Jaref_c)
         qf_2 = D * (0.5 * jv_c * jv_c)
@@ -2532,7 +2544,10 @@ def func_linesearch_batch_tiled_wc(
     return res_alpha
 
 
-@qd.kernel(fastcache=gs.use_fastcache)
+# fn_attrs: remove JIT default max=2 waves/EU constraint so compiler
+# allocates VGPRs freely (kernel exceeds 256 VGPRs, "1,2" causes wasted
+# compression effort with no occupancy benefit).
+@qd.kernel(fastcache=gs.use_fastcache, fn_attrs={"amdgpu": {"amdgpu-waves-per-eu": "1,1"}})
 def _kernel_solve_body_tiled_wc_amdgpu(
     entities_info: array_class.EntitiesInfo,
     dofs_state: array_class.DofsState,

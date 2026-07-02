@@ -303,7 +303,9 @@ class Collider:
             # instead of the contact0 path's 64 (gpu_cores already factors in cores_per_unit=64
             # for HIP). On NVIDIA we keep upstream's gpu_cores sizing.
             if torch.version.hip:
-                multicontact_cores = gpu_props.multi_processor_count * 256
+                # Tuned for MI300X/MI325X: 64 threads/CU keeps each wavefront doing
+                # more real work vs 256 which oversubscribes with mostly empty-queue checks.
+                multicontact_cores = gpu_props.multi_processor_count * 64
             else:
                 multicontact_cores = gpu_cores
 
@@ -313,7 +315,7 @@ class Collider:
                 # Heuristic to distribute the workflow between GJK and MPR (round up to mult of 64)
                 self._multicontact_n_gjk_threads = math.ceil((multicontact_cores // 32) / 64) * 64
             self._multicontact_n_total_threads = multicontact_cores
-            self._multicontact_max_items_per_thread = 128 if torch.version.hip else cores_per_unit
+            self._multicontact_max_items_per_thread = 512 if torch.version.hip else cores_per_unit
             self._multicontact_mpr_state = array_class.get_mpr_state(self._multicontact_n_total_threads)
 
     def _init_multicontact_gjk_state(self):
