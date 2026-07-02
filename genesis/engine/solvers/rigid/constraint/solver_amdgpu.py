@@ -2012,12 +2012,25 @@ def _func_ls_pt_opt_twc(
     constraint_state: array_class.ConstraintState,
     rigid_global_info: array_class.RigidGlobalInfo,
 ):
-    """Tiled wave-coop point evaluation: 8 envs reduce in parallel."""
+    """Tiled wave-coop point evaluation: 8 envs reduce in parallel.
+
+    LDS-caches Jaref[], jv[], efc_D[], efc_frictionloss[], diag[] to eliminate
+    repeated HBM round-trips. This function is called up to ls_iterations times
+    per CG iteration, so caching these n_con arrays saves significant bandwidth.
+    LDS budget: 5 * (ENVS=8) * (MAX_CON=64) = 2560 floats = 10 KB.
+    """
     BLOCK_DIM = qd.static(_TWC_BLOCK_DIM)
     COOP = qd.static(_TWC_COOP_FACTOR)
     ENVS = qd.static(_TWC_ENVS_PER_BLOCK)
+    LS_MAX_CON = qd.static(64)
     pt_red = qd.simt.block.SharedArray((3, BLOCK_DIM), gs.qd_float)
     pt_bcast = qd.simt.block.SharedArray((ENVS, 3), gs.qd_float)
+    # LDS caches for constraint arrays read on every linesearch evaluation.
+    Jaref_lds = qd.simt.block.SharedArray((ENVS, LS_MAX_CON), gs.qd_float)
+    jv_lds = qd.simt.block.SharedArray((ENVS, LS_MAX_CON), gs.qd_float)
+    efc_D_lds = qd.simt.block.SharedArray((ENVS, LS_MAX_CON), gs.qd_float)
+    floss_lds = qd.simt.block.SharedArray((ENVS, LS_MAX_CON), gs.qd_float)
+    diag_lds = qd.simt.block.SharedArray((ENVS, LS_MAX_CON), gs.qd_float)
 
     env_in_block = tid // COOP
     lane_in_env = tid % COOP
@@ -2026,18 +2039,36 @@ def _func_ls_pt_opt_twc(
     nef = ne + constraint_state.n_constraints_frictionloss[i_b]
     n_con = constraint_state.n_constraints[i_b]
 
+    # Cooperatively fill LDS caches (COOP-strided, same pattern as Phase 4).
+    i_c = lane_in_env
+    while i_c < LS_MAX_CON and i_c < n_con:
+        Jaref_lds[env_in_block, i_c] = constraint_state.Jaref[i_c, i_b]
+        jv_lds[env_in_block, i_c] = constraint_state.jv[i_c, i_b]
+        efc_D_lds[env_in_block, i_c] = constraint_state.efc_D[i_c, i_b]
+        floss_lds[env_in_block, i_c] = constraint_state.efc_frictionloss[i_c, i_b]
+        diag_lds[env_in_block, i_c] = constraint_state.diag[i_c, i_b]
+        i_c = i_c + COOP
+    qd.simt.block.sync()
+
     my_t0 = gs.qd_float(0.0)
     my_t1 = gs.qd_float(0.0)
     my_t2 = gs.qd_float(0.0)
 
-    # Friction [ne, nef).
+    # Friction [ne, nef) -- read from LDS if within cache, else HBM fallback.
     i_c = ne + lane_in_env
     while i_c < nef:
-        Jaref_c = constraint_state.Jaref[i_c, i_b]
-        jv_c = constraint_state.jv[i_c, i_b]
-        D = constraint_state.efc_D[i_c, i_b]
-        f = constraint_state.efc_frictionloss[i_c, i_b]
-        r = constraint_state.diag[i_c, i_b]
+        if i_c < LS_MAX_CON:
+            Jaref_c = Jaref_lds[env_in_block, i_c]
+            jv_c = jv_lds[env_in_block, i_c]
+            D = efc_D_lds[env_in_block, i_c]
+            f = floss_lds[env_in_block, i_c]
+            r = diag_lds[env_in_block, i_c]
+        else:
+            Jaref_c = constraint_state.Jaref[i_c, i_b]
+            jv_c = constraint_state.jv[i_c, i_b]
+            D = constraint_state.efc_D[i_c, i_b]
+            f = constraint_state.efc_frictionloss[i_c, i_b]
+            r = constraint_state.diag[i_c, i_b]
         qf_0 = D * (0.5 * Jaref_c * Jaref_c)
         qf_1 = D * (jv_c * Jaref_c)
         qf_2 = D * (0.5 * jv_c * jv_c)
@@ -2054,12 +2085,17 @@ def _func_ls_pt_opt_twc(
         my_t2 = my_t2 + qf_2
         i_c = i_c + COOP
 
-    # Contact [nef, n_con).
+    # Contact [nef, n_con) -- read from LDS if within cache, else HBM fallback.
     i_c = nef + lane_in_env
     while i_c < n_con:
-        Jaref_c = constraint_state.Jaref[i_c, i_b]
-        jv_c = constraint_state.jv[i_c, i_b]
-        D = constraint_state.efc_D[i_c, i_b]
+        if i_c < LS_MAX_CON:
+            Jaref_c = Jaref_lds[env_in_block, i_c]
+            jv_c = jv_lds[env_in_block, i_c]
+            D = efc_D_lds[env_in_block, i_c]
+        else:
+            Jaref_c = constraint_state.Jaref[i_c, i_b]
+            jv_c = constraint_state.jv[i_c, i_b]
+            D = constraint_state.efc_D[i_c, i_b]
         x = Jaref_c + alpha * jv_c
         active = x < 0
         qf_0 = D * (0.5 * Jaref_c * Jaref_c)
