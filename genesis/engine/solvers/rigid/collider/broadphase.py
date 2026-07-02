@@ -305,6 +305,25 @@ def func_broad_phase_lds(
 
                         if (min_a0 > max_b0 or min_a1 > max_b1 or min_a2 > max_b2 or
                             max_a0 < min_b0 or max_a1 < min_b1 or max_a2 < min_b2):
+
+                            # Clear collision normal cache if not in contact
+                            if qd.static(not static_rigid_sim_config.enable_mujoco_compatibility):
+                                if func_check_collision_valid(
+                                    i_ga_c,
+                                    i_gb_c,
+                                    i_b,
+                                    links_state,
+                                    links_info,
+                                    geoms_info,
+                                    rigid_global_info,
+                                    static_rigid_sim_config,
+                                    constraint_state,
+                                    equalities_info,
+                                    collider_info,
+                                ):
+                                    i_pair = collider_info.collision_pair_idx[i_ga_c, i_gb_c]
+                                    collider_state.contact_cache.normal[i_pair, i_b] = qd.Vector.zero(gs.qd_float, 3)
+
                             continue
 
                         if not func_check_collision_valid(
@@ -611,6 +630,23 @@ def _func_broad_phase_sap(
                         if not (min_a0 <= max_b0 and max_a0 >= min_b0 and
                                 min_a1 <= max_b1 and max_a1 >= min_b1 and
                                 min_a2 <= max_b2 and max_a2 >= min_b2):
+                            # Clear collision normal cache if not in contact
+                            if qd.static(not static_rigid_sim_config.enable_mujoco_compatibility):
+                                if func_check_collision_valid(
+                                    i_ga_c,
+                                    i_gb_c,
+                                    i_b,
+                                    links_state,
+                                    links_info,
+                                    geoms_info,
+                                    rigid_global_info,
+                                    static_rigid_sim_config,
+                                    constraint_state,
+                                    equalities_info,
+                                    collider_info,
+                                ):
+                                    i_pair = collider_info.collision_pair_idx[i_ga_c, i_gb_c]
+                                    collider_state.contact_cache.normal[i_pair, i_b] = qd.Vector.zero(gs.qd_float, 3)
                             continue
 
                         if not func_check_collision_valid(
