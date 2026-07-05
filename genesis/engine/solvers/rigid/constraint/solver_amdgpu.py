@@ -2536,10 +2536,7 @@ def func_linesearch_batch_tiled_wc(
     return res_alpha
 
 
-# fn_attrs: remove JIT default max=2 waves/EU constraint so compiler
-# allocates VGPRs freely (kernel exceeds 256 VGPRs, "1,2" causes wasted
-# compression effort with no occupancy benefit).
-@qd.kernel(fastcache=gs.use_fastcache, fn_attrs={"amdgpu": {"amdgpu-waves-per-eu": "1,1"}})
+@qd.kernel(fastcache=gs.use_fastcache)
 def _kernel_solve_body_tiled_wc_amdgpu(
     entities_info: array_class.EntitiesInfo,
     dofs_state: array_class.DofsState,
