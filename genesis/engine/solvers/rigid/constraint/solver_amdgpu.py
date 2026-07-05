@@ -2028,11 +2028,11 @@ def _func_ls_pt_opt_twc(
     pt_red = qd.simt.block.SharedArray((3, BLOCK_DIM), gs.qd_float)
     pt_bcast = qd.simt.block.SharedArray((ENVS, 3), gs.qd_float)
     # LDS caches for constraint arrays read on every linesearch evaluation.
-    Jaref_lds = qd.simt.block.SharedArray((ENVS, _LS_MAX_CON), gs.qd_float)
-    jv_lds = qd.simt.block.SharedArray((ENVS, _LS_MAX_CON), gs.qd_float)
-    efc_D_lds = qd.simt.block.SharedArray((ENVS, _LS_MAX_CON), gs.qd_float)
-    floss_lds = qd.simt.block.SharedArray((ENVS, _LS_MAX_CON), gs.qd_float)
-    diag_lds = qd.simt.block.SharedArray((ENVS, _LS_MAX_CON), gs.qd_float)
+    Jaref_lds = qd.simt.block.SharedArray((ENVS, 64), gs.qd_float)
+    jv_lds = qd.simt.block.SharedArray((ENVS, 64), gs.qd_float)
+    efc_D_lds = qd.simt.block.SharedArray((ENVS, 64), gs.qd_float)
+    floss_lds = qd.simt.block.SharedArray((ENVS, 64), gs.qd_float)
+    diag_lds = qd.simt.block.SharedArray((ENVS, 64), gs.qd_float)
 
     env_in_block = tid // COOP
     lane_in_env = tid % COOP
@@ -2044,7 +2044,7 @@ def _func_ls_pt_opt_twc(
     # Cooperatively fill LDS caches (COOP-strided, same pattern as Phase 4).
     # Fill up to _LS_MAX_CON entries; guard with conditional inside loop.
     i_c = lane_in_env
-    while i_c < _LS_MAX_CON:
+    while i_c < 64:
         if i_c < n_con:
             Jaref_lds[env_in_block, i_c] = constraint_state.Jaref[i_c, i_b]
             jv_lds[env_in_block, i_c] = constraint_state.jv[i_c, i_b]
@@ -2061,7 +2061,7 @@ def _func_ls_pt_opt_twc(
     # Friction [ne, nef) -- read from LDS if within cache, else HBM fallback.
     i_c = ne + lane_in_env
     while i_c < nef:
-        if i_c < _LS_MAX_CON:
+        if i_c < 64:
             Jaref_c = Jaref_lds[env_in_block, i_c]
             jv_c = jv_lds[env_in_block, i_c]
             D = efc_D_lds[env_in_block, i_c]
@@ -2092,7 +2092,7 @@ def _func_ls_pt_opt_twc(
     # Contact [nef, n_con) -- read from LDS if within cache, else HBM fallback.
     i_c = nef + lane_in_env
     while i_c < n_con:
-        if i_c < _LS_MAX_CON:
+        if i_c < 64:
             Jaref_c = Jaref_lds[env_in_block, i_c]
             jv_c = jv_lds[env_in_block, i_c]
             D = efc_D_lds[env_in_block, i_c]
