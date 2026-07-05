@@ -1773,6 +1773,9 @@ def func_solve_body_decomposed_amdgpu(
 _TWC_BLOCK_DIM = 64
 _TWC_COOP_FACTOR = 8
 _TWC_ENVS_PER_BLOCK = 8
+# LDS cache size constants for linesearch functions (must be module-level for SharedArray dims)
+_LS_MAX_CON = 64   # max constraints cached in LDS for _func_ls_pt_opt_twc
+_LS3A_MAX_CON = 64  # max constraints cached in LDS for _func_ls_pt_3a_twc
 
 
 @qd.func
@@ -2022,15 +2025,15 @@ def _func_ls_pt_opt_twc(
     BLOCK_DIM = qd.static(_TWC_BLOCK_DIM)
     COOP = qd.static(_TWC_COOP_FACTOR)
     ENVS = qd.static(_TWC_ENVS_PER_BLOCK)
-    LS_MAX_CON = qd.static(64)
+    LS_MAX_CON = _LS_MAX_CON  # module-level constant required for SharedArray dims
     pt_red = qd.simt.block.SharedArray((3, BLOCK_DIM), gs.qd_float)
     pt_bcast = qd.simt.block.SharedArray((ENVS, 3), gs.qd_float)
     # LDS caches for constraint arrays read on every linesearch evaluation.
-    Jaref_lds = qd.simt.block.SharedArray((ENVS, LS_MAX_CON), gs.qd_float)
-    jv_lds = qd.simt.block.SharedArray((ENVS, LS_MAX_CON), gs.qd_float)
-    efc_D_lds = qd.simt.block.SharedArray((ENVS, LS_MAX_CON), gs.qd_float)
-    floss_lds = qd.simt.block.SharedArray((ENVS, LS_MAX_CON), gs.qd_float)
-    diag_lds = qd.simt.block.SharedArray((ENVS, LS_MAX_CON), gs.qd_float)
+    Jaref_lds = qd.simt.block.SharedArray((ENVS, _LS_MAX_CON), gs.qd_float)
+    jv_lds = qd.simt.block.SharedArray((ENVS, _LS_MAX_CON), gs.qd_float)
+    efc_D_lds = qd.simt.block.SharedArray((ENVS, _LS_MAX_CON), gs.qd_float)
+    floss_lds = qd.simt.block.SharedArray((ENVS, _LS_MAX_CON), gs.qd_float)
+    diag_lds = qd.simt.block.SharedArray((ENVS, _LS_MAX_CON), gs.qd_float)
 
     env_in_block = tid // COOP
     lane_in_env = tid % COOP
@@ -2041,7 +2044,7 @@ def _func_ls_pt_opt_twc(
 
     # Cooperatively fill LDS caches (COOP-strided, same pattern as Phase 4).
     i_c = lane_in_env
-    while i_c < LS_MAX_CON and i_c < n_con:
+    while i_c < _LS_MAX_CON and i_c < n_con:
         Jaref_lds[env_in_block, i_c] = constraint_state.Jaref[i_c, i_b]
         jv_lds[env_in_block, i_c] = constraint_state.jv[i_c, i_b]
         efc_D_lds[env_in_block, i_c] = constraint_state.efc_D[i_c, i_b]
@@ -2057,7 +2060,7 @@ def _func_ls_pt_opt_twc(
     # Friction [ne, nef) -- read from LDS if within cache, else HBM fallback.
     i_c = ne + lane_in_env
     while i_c < nef:
-        if i_c < LS_MAX_CON:
+        if i_c < _LS_MAX_CON:
             Jaref_c = Jaref_lds[env_in_block, i_c]
             jv_c = jv_lds[env_in_block, i_c]
             D = efc_D_lds[env_in_block, i_c]
@@ -2088,7 +2091,7 @@ def _func_ls_pt_opt_twc(
     # Contact [nef, n_con) -- read from LDS if within cache, else HBM fallback.
     i_c = nef + lane_in_env
     while i_c < n_con:
-        if i_c < LS_MAX_CON:
+        if i_c < _LS_MAX_CON:
             Jaref_c = Jaref_lds[env_in_block, i_c]
             jv_c = jv_lds[env_in_block, i_c]
             D = efc_D_lds[env_in_block, i_c]
@@ -2172,7 +2175,7 @@ def _func_ls_pt_3a_twc(
     # Friction [ne, nef) -- LDS fast path, HBM fallback for n_con > 64.
     i_c = ne + lane_in_env
     while i_c < nef:
-        if i_c < LS3A_MAX_CON:
+        if i_c < _LS3A_MAX_CON:
             Jaref_c = Jaref3_lds[env_in_block, i_c]
             jv_c = jv3_lds[env_in_block, i_c]
             D = efc_D3_lds[env_in_block, i_c]
@@ -2229,7 +2232,7 @@ def _func_ls_pt_3a_twc(
     # Contact [nef, n_con) -- LDS fast path, HBM fallback for n_con > 64.
     i_c = nef + lane_in_env
     while i_c < n_con:
-        if i_c < LS3A_MAX_CON:
+        if i_c < _LS3A_MAX_CON:
             Jaref_c = Jaref3_lds[env_in_block, i_c]
             jv_c = jv3_lds[env_in_block, i_c]
             D = efc_D3_lds[env_in_block, i_c]
