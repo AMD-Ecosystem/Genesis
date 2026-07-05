@@ -2058,21 +2058,21 @@ def _func_ls_pt_opt_twc(
     my_t1 = gs.qd_float(0.0)
     my_t2 = gs.qd_float(0.0)
 
-    # Friction [ne, nef) -- read from LDS if within cache, else HBM fallback.
+    # Friction [ne, nef) -- read from LDS if within cache, else HBM.
+    # Pre-init from HBM; quadrants requires vars defined before conditional branches.
     i_c = ne + lane_in_env
     while i_c < nef:
+        Jaref_c = constraint_state.Jaref[i_c, i_b]
+        jv_c = constraint_state.jv[i_c, i_b]
+        D = constraint_state.efc_D[i_c, i_b]
+        f = constraint_state.efc_frictionloss[i_c, i_b]
+        r = constraint_state.diag[i_c, i_b]
         if i_c < 64:
             Jaref_c = Jaref_lds[env_in_block, i_c]
             jv_c = jv_lds[env_in_block, i_c]
             D = efc_D_lds[env_in_block, i_c]
             f = floss_lds[env_in_block, i_c]
             r = diag_lds[env_in_block, i_c]
-        else:
-            Jaref_c = constraint_state.Jaref[i_c, i_b]
-            jv_c = constraint_state.jv[i_c, i_b]
-            D = constraint_state.efc_D[i_c, i_b]
-            f = constraint_state.efc_frictionloss[i_c, i_b]
-            r = constraint_state.diag[i_c, i_b]
         qf_0 = D * (0.5 * Jaref_c * Jaref_c)
         qf_1 = D * (jv_c * Jaref_c)
         qf_2 = D * (0.5 * jv_c * jv_c)
@@ -2089,17 +2089,17 @@ def _func_ls_pt_opt_twc(
         my_t2 = my_t2 + qf_2
         i_c = i_c + COOP
 
-    # Contact [nef, n_con) -- read from LDS if within cache, else HBM fallback.
+    # Contact [nef, n_con) -- read from LDS if within cache, else HBM.
+    # Pre-init from HBM; quadrants requires vars defined before conditional branches.
     i_c = nef + lane_in_env
     while i_c < n_con:
+        Jaref_c = constraint_state.Jaref[i_c, i_b]
+        jv_c = constraint_state.jv[i_c, i_b]
+        D = constraint_state.efc_D[i_c, i_b]
         if i_c < 64:
             Jaref_c = Jaref_lds[env_in_block, i_c]
             jv_c = jv_lds[env_in_block, i_c]
             D = efc_D_lds[env_in_block, i_c]
-        else:
-            Jaref_c = constraint_state.Jaref[i_c, i_b]
-            jv_c = constraint_state.jv[i_c, i_b]
-            D = constraint_state.efc_D[i_c, i_b]
         x = Jaref_c + alpha * jv_c
         active = x < 0
         qf_0 = D * (0.5 * Jaref_c * Jaref_c)
