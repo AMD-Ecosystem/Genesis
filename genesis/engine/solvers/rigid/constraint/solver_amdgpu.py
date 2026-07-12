@@ -2729,9 +2729,8 @@ def _kernel_solve_body_tiled_wc_amdgpu(
                     # Fast path: LDS reads for up to TWC_LDS_MAX_CON constraints.
                     # Use conditional accumulation (no break) for Quadrants compatibility.
                     j_c_lds = 0
-                    while j_c_lds < TWC_LDS_MAX_CON:
-                        if j_c_lds < n_con:
-                            qfrc = qfrc + constraint_state.jac[j_c_lds, i_d, i_b] * efc_force_lds[env_in_block, j_c_lds]
+                    while j_c_lds < TWC_LDS_MAX_CON and j_c_lds < n_con:
+                        qfrc = qfrc + constraint_state.jac[j_c_lds, i_d, i_b] * efc_force_lds[env_in_block, j_c_lds]
                         j_c_lds = j_c_lds + 1
                     # HBM tail for n_con > 64 (uncommon on humanoid robots)
                     j_c_tail = TWC_LDS_MAX_CON
