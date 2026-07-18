@@ -2545,7 +2545,7 @@ def _kernel_solve_body_tiled_wc_amdgpu(
         # Filled cooperatively by 8 lanes in Phase 4a (already COOP-strided),
         # read in Phase 4b inner loop to avoid N_DOFS * n_con HBM round-trips.
         # Zero VGPR pressure vs the register-cache approach (Fix-4b).
-        TWC_LDS_MAX_CON = qd.static(64)
+        TWC_LDS_MAX_CON = qd.static(256)  # increased: covers G1 ~200 constraints fully
         efc_force_lds = qd.simt.block.SharedArray((TWC_LDS_MAX_CON, ENVS), gs.qd_float)  # transposed: conflict-free writes
 
         # Out-of-range guard (only the last block can have i_b >= _B
