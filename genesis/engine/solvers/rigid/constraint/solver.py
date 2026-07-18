@@ -4207,9 +4207,9 @@ def _get_static_config(*args, **kwargs):
 #      window with zero dispatch overhead (the chosen impl is served from the cached fast path).
 @qd.perf_dispatch(
     get_geometry_hash=lambda *args, **kwargs: (*args, frozendict(kwargs)),
-    first_warmup=10,
-    warmup=10,
-    active=15,
+    first_warmup=3,
+    warmup=3,
+    active=5,
     repeat_after_seconds=0,
 )
 def func_solve_body(
