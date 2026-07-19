@@ -711,7 +711,7 @@ def func_mpr_contact_from_centers(
     # We assign res=0 meaning "portal already valid, skip discover_portal".
     # If no valid cached portal, we call mpr_discover_portal and overwrite res.
     res = 0
-    if qd.static(i_pair >= 0):
+    if i_pair >= 0:
         if collider_state.contact_cache.portal_valid[i_pair, i_b]:
             # Restore cached portal into mpr_state (vertices 1, 2, 3; vertex 0 = center diff)
             mpr_state.simplex_support.v[0, i_b] = center_a - center_b
@@ -758,7 +758,7 @@ def func_mpr_contact_from_centers(
                 pos_b=pos_b,
                 quat_b=quat_b,
             )
-    if qd.static(i_pair < 0):
+    if i_pair < 0:
         res = mpr_discover_portal(
             geoms_info=geoms_info,
             support_field_info=support_field_info,
@@ -788,7 +788,7 @@ def func_mpr_contact_from_centers(
         is_col, normal, penetration, pos = mpr_find_penetr_segment(mpr_state, i_ga, i_gb, i_b)
     elif res == 0:
         # Store the discovered portal for next-frame warm-start before refining
-        if qd.static(i_pair >= 0):
+        if i_pair >= 0:
             collider_state.contact_cache.portal_v[1, i_pair, i_b] = mpr_state.simplex_support.v[1, i_b]
             collider_state.contact_cache.portal_v[2, i_pair, i_b] = mpr_state.simplex_support.v[2, i_b]
             collider_state.contact_cache.portal_v[3, i_pair, i_b] = mpr_state.simplex_support.v[3, i_b]
