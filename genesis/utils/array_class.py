@@ -1181,13 +1181,20 @@ class GJKState:
     distance: qd.Tensor
     # GJK temporal coherence: True when stored 4-vertex simplex is valid for warm-start
     simplex_valid: qd.Tensor
+    # Cross-frame per-pair warm-start cache indexed by (collision_pair_idx, env).
+    # Dimensioned (n_possible_pairs, _B) so each pair keeps its own persistent simplex,
+    # immune to clear_cache() which only resets within-frame working state.
+    simplex_pair_valid: qd.Tensor       # (n_possible_pairs, _B) bool
+    simplex_pair_local_obj1: qd.Tensor  # (n_possible_pairs, _B, 4, 3) float
+    simplex_pair_local_obj2: qd.Tensor  # (n_possible_pairs, _B, 4, 3) float
+    simplex_pair_nverts: qd.Tensor      # (n_possible_pairs, _B) int
     # Differentiable contact detection
     diff_contact_input: DiffContactInput
     n_diff_contact_input: qd.Tensor
     diff_penetration: qd.Tensor
 
 
-def get_gjk_state(_B, static_rigid_sim_config, gjk_info, is_active, requires_grad=False):
+def get_gjk_state(_B, static_rigid_sim_config, gjk_info, is_active, requires_grad=False, n_possible_pairs=1):
     enable_mujoco_compatibility = static_rigid_sim_config.enable_mujoco_compatibility
     polytope_max_faces = gjk_info.polytope_max_faces[None]
     max_contacts_per_pair = gjk_info.max_contacts_per_pair[None]
@@ -1227,6 +1234,10 @@ def get_gjk_state(_B, static_rigid_sim_config, gjk_info, is_active, requires_gra
         penetration=V(dtype=gs.qd_float, shape=(_B,)),
         distance=V(dtype=gs.qd_float, shape=(_B,)),
         simplex_valid=V(dtype=gs.qd_bool, shape=(_B,)),
+        simplex_pair_valid=V(dtype=gs.qd_bool, shape=(max(n_possible_pairs, 1), _B)),
+        simplex_pair_local_obj1=V_VEC(3, dtype=gs.qd_float, shape=(max(n_possible_pairs, 1), _B, 4)),
+        simplex_pair_local_obj2=V_VEC(3, dtype=gs.qd_float, shape=(max(n_possible_pairs, 1), _B, 4)),
+        simplex_pair_nverts=V(dtype=gs.qd_int, shape=(max(n_possible_pairs, 1), _B)),
         diff_contact_input=get_diff_contact_input(_B, max(max_contacts_per_pair, 1), is_active, requires_grad),
         n_diff_contact_input=V(dtype=gs.qd_int, shape=(_B,)),
         diff_penetration=V(dtype=gs.qd_float, shape=maybe_shape((_B, max_contacts_per_pair), requires_grad)),
@@ -1282,6 +1293,10 @@ def get_gjk_state_contact_only(_B):
         penetration=V(dtype=gs.qd_float, shape=(1,)),
         distance=V(dtype=gs.qd_float, shape=(_B,)),
         simplex_valid=V(dtype=gs.qd_bool, shape=(_B,)),
+        simplex_pair_valid=V(dtype=gs.qd_bool, shape=(1, _B)),
+        simplex_pair_local_obj1=V_VEC(3, dtype=gs.qd_float, shape=(1, _B, 4)),
+        simplex_pair_local_obj2=V_VEC(3, dtype=gs.qd_float, shape=(1, _B, 4)),
+        simplex_pair_nverts=V(dtype=gs.qd_int, shape=(1, _B)),
         diff_contact_input=get_diff_contact_input(_dummy_B, 1, is_active=False),
         n_diff_contact_input=V(dtype=gs.qd_int, shape=(1,)),
         diff_penetration=V(dtype=gs.qd_float, shape=()),

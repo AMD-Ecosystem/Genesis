@@ -1279,6 +1279,8 @@ def func_convex_convex_contact(
                                     ga_quat_current,
                                     gb_pos_current,
                                     gb_quat_current,
+                                    i_pair,
+                                    collider_info.max_possible_pairs[None],
                                 )
 
                             is_col = gjk_state.is_col[i_b] == 1

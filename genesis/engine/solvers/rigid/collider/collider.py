@@ -106,7 +106,7 @@ class Collider:
         if self._collider_static_config.has_nonconvex_nonterrain:
             self._sdf.activate()
         if self._collider_static_config.has_non_box_plane_convex_convex:
-            self._gjk.activate()
+            self._gjk.activate(n_possible_pairs=self._n_possible_pairs)
         if self._collider_static_config.has_terrain or self._collider_static_config.has_non_box_plane_convex_convex:
             self._support_field.activate()
 
@@ -324,6 +324,7 @@ class Collider:
             self._gjk._gjk_info,
             True,
             self._solver._static_rigid_sim_config.requires_grad,
+            n_possible_pairs=1,  # scratch state, not cross-frame
         )
 
     def _compute_collision_pair_idx(self):

@@ -112,26 +112,30 @@ class GJK:
         )
 
         # Initialize GJK state
+        self._n_possible_pairs = 0  # Will be updated by collider after pair computation
         self._gjk_state = array_class.get_gjk_state(
             rigid_solver._B,
             rigid_solver._static_rigid_sim_config,
             self._gjk_info,
             False,
             rigid_solver._static_rigid_sim_config.requires_grad,
+            n_possible_pairs=1,
         )
 
         self._is_active = False
 
-    def activate(self):
+    def activate(self, n_possible_pairs=1):
         if self._is_active:
             return
 
+        self._n_possible_pairs = n_possible_pairs
         self._gjk_state = array_class.get_gjk_state(
             self._solver._B,
             self._solver._static_rigid_sim_config,
             self._gjk_info,
             True,
             self._solver._static_rigid_sim_config.requires_grad,
+            n_possible_pairs=max(n_possible_pairs, 1),
         )
         self._is_active = True
 
@@ -188,6 +192,8 @@ def func_gjk_contact(
     quat_a: qd.types.vector(4, dtype=gs.qd_float),
     pos_b: qd.types.vector(3, dtype=gs.qd_float),
     quat_b: qd.types.vector(4, dtype=gs.qd_float),
+    i_pair=qd.static(-1),
+    n_possible_pairs=qd.static(0),
 ):
     """
     Detect (possibly multiple) contact between two geometries using GJK and EPA algorithms.
@@ -200,8 +206,22 @@ def func_gjk_contact(
     MuJoCo's implementation:
     https://github.com/google-deepmind/mujoco/blob/7dc7a349c5ba2db2d3f8ab50a367d08e2f1afbbc/src/engine/engine_collision_gjk.c#L2259
     """
-    # Clear the cache to prepare for this GJK-EPA run
+    # Clear the within-frame working cache to prepare for this GJK-EPA run.
+    # clear_cache resets simplex_valid=False and prev_vertex_id=-1, but does NOT
+    # reset simplex_vertex.local_obj1/obj2. We load per-pair warm-start AFTER
+    # clear_cache so simplex_valid stays True through func_safe_gjk.
     clear_cache(gjk_state, i_b)
+
+    # Per-pair cross-frame warm-start: load stable simplex from pair-indexed cache
+    # AFTER clear_cache so the working simplex_valid=True flag is NOT overwritten.
+    # i_pair >= 0 means a stable dense pair index was passed by the caller.
+    if qd.static(i_pair >= 0 and n_possible_pairs > 0):
+        if gjk_state.simplex_pair_valid[i_pair, i_b]:
+            gjk_state.simplex_valid[i_b] = True
+            gjk_state.simplex.nverts[i_b] = gjk_state.simplex_pair_nverts[i_pair, i_b]
+            for _i in range(4):
+                gjk_state.simplex_vertex.local_obj1[i_b, _i] = gjk_state.simplex_pair_local_obj1[i_pair, i_b, _i]
+                gjk_state.simplex_vertex.local_obj2[i_b, _i] = gjk_state.simplex_pair_local_obj2[i_pair, i_b, _i]
 
     # We use MuJoCo's GJK implementation when the compatibility mode is enabled
     if qd.static(static_rigid_sim_config.enable_mujoco_compatibility):
@@ -389,6 +409,13 @@ def func_gjk_contact(
             i_b,
         )
         if gjk_flag == GJK_RETURN_CODE.INTERSECT:
+            # Write back 4-vertex simplex to stable per-pair cache for next frame.
+            if qd.static(i_pair >= 0 and n_possible_pairs > 0):
+                gjk_state.simplex_pair_valid[i_pair, i_b] = True
+                gjk_state.simplex_pair_nverts[i_pair, i_b] = gjk_state.simplex.nverts[i_b]
+                for _i in range(4):
+                    gjk_state.simplex_pair_local_obj1[i_pair, i_b, _i] = gjk_state.simplex_vertex.local_obj1[i_b, _i]
+                    gjk_state.simplex_pair_local_obj2[i_pair, i_b, _i] = gjk_state.simplex_vertex.local_obj2[i_b, _i]
             # Initialize polytope
             gjk_state.polytope.nverts[i_b] = 0
             gjk_state.polytope.nfaces[i_b] = 0
