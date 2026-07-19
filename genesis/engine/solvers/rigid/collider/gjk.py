@@ -215,13 +215,14 @@ def func_gjk_contact(
     # Per-pair cross-frame warm-start: load stable simplex from pair-indexed cache
     # AFTER clear_cache so the working simplex_valid=True flag is NOT overwritten.
     # i_pair >= 0 means a stable dense pair index was passed by the caller.
-    if qd.static(i_pair >= 0 and n_possible_pairs > 0):
-        if gjk_state.simplex_pair_valid[i_pair, i_b]:
-            gjk_state.simplex_valid[i_b] = True
-            gjk_state.simplex.nverts[i_b] = gjk_state.simplex_pair_nverts[i_pair, i_b]
-            for _i in range(4):
-                gjk_state.simplex_vertex.local_obj1[i_b, _i] = gjk_state.simplex_pair_local_obj1[i_pair, i_b, _i]
-                gjk_state.simplex_vertex.local_obj2[i_b, _i] = gjk_state.simplex_pair_local_obj2[i_pair, i_b, _i]
+    if qd.static(i_pair >= 0):
+        if qd.static(n_possible_pairs > 0):
+            if gjk_state.simplex_pair_valid[i_pair, i_b]:
+                gjk_state.simplex_valid[i_b] = True
+                gjk_state.simplex.nverts[i_b] = gjk_state.simplex_pair_nverts[i_pair, i_b]
+                for _i in qd.static(range(4)):
+                    gjk_state.simplex_vertex.local_obj1[i_b, _i] = gjk_state.simplex_pair_local_obj1[i_pair, i_b, _i]
+                    gjk_state.simplex_vertex.local_obj2[i_b, _i] = gjk_state.simplex_pair_local_obj2[i_pair, i_b, _i]
 
     # We use MuJoCo's GJK implementation when the compatibility mode is enabled
     if qd.static(static_rigid_sim_config.enable_mujoco_compatibility):
@@ -410,12 +411,13 @@ def func_gjk_contact(
         )
         if gjk_flag == GJK_RETURN_CODE.INTERSECT:
             # Write back 4-vertex simplex to stable per-pair cache for next frame.
-            if qd.static(i_pair >= 0 and n_possible_pairs > 0):
-                gjk_state.simplex_pair_valid[i_pair, i_b] = True
-                gjk_state.simplex_pair_nverts[i_pair, i_b] = gjk_state.simplex.nverts[i_b]
-                for _i in range(4):
-                    gjk_state.simplex_pair_local_obj1[i_pair, i_b, _i] = gjk_state.simplex_vertex.local_obj1[i_b, _i]
-                    gjk_state.simplex_pair_local_obj2[i_pair, i_b, _i] = gjk_state.simplex_vertex.local_obj2[i_b, _i]
+            if qd.static(i_pair >= 0):
+                if qd.static(n_possible_pairs > 0):
+                    gjk_state.simplex_pair_valid[i_pair, i_b] = True
+                    gjk_state.simplex_pair_nverts[i_pair, i_b] = gjk_state.simplex.nverts[i_b]
+                    for _i in qd.static(range(4)):
+                        gjk_state.simplex_pair_local_obj1[i_pair, i_b, _i] = gjk_state.simplex_vertex.local_obj1[i_b, _i]
+                        gjk_state.simplex_pair_local_obj2[i_pair, i_b, _i] = gjk_state.simplex_vertex.local_obj2[i_b, _i]
             # Initialize polytope
             gjk_state.polytope.nverts[i_b] = 0
             gjk_state.polytope.nfaces[i_b] = 0
