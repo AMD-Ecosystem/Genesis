@@ -170,6 +170,9 @@ def func_broad_phase_lds(
 
     MAX_GEOMS_NUM = qd.static(MAX_GEOMS_IN_LDS)
     MAX_SORT_ELEM_NUM = qd.static(MAX_GEOMS_NUM * 2)
+    # Pad row stride by +1 so that 16 lanes (one per env in a workgroup) hit 16 distinct
+    # LDS banks for column-aligned accesses instead of colliding 2-way (gcd(92, 32) = 4).
+    LDS_ROW_STRIDE = qd.static(MAX_SORT_ELEM_NUM + 1)
 
     BLOCK_DIM = qd.static(64)
     ENVS_PER_BLOCK = qd.static(16)
@@ -185,15 +188,18 @@ def func_broad_phase_lds(
         if i_thread - i_b * THREADS_PER_ENV != 0:
             continue
 
-        lds_sort_value = qd.simt.block.SharedArray((ENVS_PER_BLOCK, MAX_SORT_ELEM_NUM), gs.qd_float)
+        lds_sort_value = qd.simt.block.SharedArray((ENVS_PER_BLOCK, LDS_ROW_STRIDE), gs.qd_float)
 
         # Packed format: lds_sort_i_g_packed = (i_g << 1) | is_max_bit
-        lds_sort_packed = qd.simt.block.SharedArray((ENVS_PER_BLOCK, MAX_SORT_ELEM_NUM), gs.qd_int)
+        lds_sort_packed = qd.simt.block.SharedArray((ENVS_PER_BLOCK, LDS_ROW_STRIDE), gs.qd_int)
 
         # Don't need to copy `collider_state.active_buffer` into `lds_active` before using it.
         # Because the sweep below starts with `n_active = 0` and rebuilds the set from scratch.
         lds_active = qd.simt.block.SharedArray((ENVS_PER_BLOCK, MAX_GEOMS_NUM), gs.qd_int)
-        
+        # Reverse map: for each geom id, its current index in `lds_active` (or stale if not active).
+        # Lets us remove a geom in O(1) using only LDS instead of global-memory active_buffer_idx.
+        lds_pos_in_active = qd.simt.block.SharedArray((ENVS_PER_BLOCK, MAX_GEOMS_NUM), gs.qd_int)
+
         i_b_lds = i_b % ENVS_PER_BLOCK
 
         axis = 0
@@ -330,16 +336,16 @@ def func_broad_phase_lds(
                             errno[i_b] = errno[i_b] | array_class.ErrorCode.OVERFLOW_CANDIDATE_CONTACTS
 
                     lds_active[i_b_lds, n_active] = i_g
-                    geoms_state.active_buffer_idx[i_g, i_b] = n_active
+                    lds_pos_in_active[i_b_lds, i_g] = n_active
                     n_active += 1
 
                 else:
-                    j_remove = geoms_state.active_buffer_idx[i_g, i_b]
+                    j_remove = lds_pos_in_active[i_b_lds, i_g]
                     if j_remove < n_active - 1:
                         # Swap with last element
                         i_g_last = lds_active[i_b_lds, n_active - 1]
                         lds_active[i_b_lds, j_remove] = i_g_last
-                        geoms_state.active_buffer_idx[i_g_last, i_b] = j_remove
+                        lds_pos_in_active[i_b_lds, i_g_last] = j_remove
                     n_active -= 1
 
             collider_state.n_broad_pairs[i_b] = n_broad
