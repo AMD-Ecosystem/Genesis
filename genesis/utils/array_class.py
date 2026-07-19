@@ -822,6 +822,11 @@ class ColliderInfo:
     vert_neighbors: qd.Tensor
     vert_neighbor_start: qd.Tensor
     vert_n_neighbors: qd.Tensor
+    # Vertex-to-adjacent-faces CSR adjacency.  Precomputed at load time to replace O(n_faces)
+    # full scans in func_potential_mesh_normals / func_potential_mesh_edge_normals with O(degree).
+    vert_adj_faces: qd.Tensor
+    vert_adj_face_start: qd.Tensor
+    vert_adj_face_n: qd.Tensor
     # (i_ga, i_gb) -> dense pair index, or -1 if invalid. Used by SAP broadphase, narrowphase, and contact cache.
     collision_pair_idx: qd.Tensor
     max_possible_pairs: qd.Tensor
@@ -848,7 +853,7 @@ class ColliderInfo:
     prune_deep_penetration_ratio: qd.Tensor
 
 
-def get_collider_info(solver, n_vert_neighbors, n_valid_pairs, collider_static_config, **kwargs):
+def get_collider_info(solver, n_vert_neighbors, n_vert_adj_faces, n_valid_pairs, collider_static_config, **kwargs):
     for geom in solver.geoms:
         if geom.type == gs.GEOM_TYPE.TERRAIN:
             terrain_hf_shape = geom.entity.terrain_hf.shape
@@ -860,6 +865,9 @@ def get_collider_info(solver, n_vert_neighbors, n_valid_pairs, collider_static_c
         vert_neighbors=V(dtype=gs.qd_int, shape=(max(n_vert_neighbors, 1),)),
         vert_neighbor_start=V(dtype=gs.qd_int, shape=(solver.n_verts_,)),
         vert_n_neighbors=V(dtype=gs.qd_int, shape=(solver.n_verts_,)),
+        vert_adj_faces=V(dtype=gs.qd_int, shape=(max(n_vert_adj_faces, 1),)),
+        vert_adj_face_start=V(dtype=gs.qd_int, shape=(solver.n_verts_,)),
+        vert_adj_face_n=V(dtype=gs.qd_int, shape=(solver.n_verts_,)),
         collision_pair_idx=V(dtype=gs.qd_int, shape=(solver.n_geoms_, solver.n_geoms_)),
         max_possible_pairs=V(dtype=gs.qd_int, shape=()),
         max_collision_pairs=V(dtype=gs.qd_int, shape=()),

@@ -233,6 +233,8 @@ class Collider:
         # Pre-compute fields, as they are needed to initialize the collider state and info.
         vert_neighbors, vert_neighbor_start, vert_n_neighbors = self._compute_verts_connectivity()
         n_vert_neighbors = len(vert_neighbors)
+        vert_adj_faces, vert_adj_face_start, vert_adj_face_n = self._compute_vert_adj_faces()
+        n_vert_adj_faces = len(vert_adj_faces)
         n_valid_pairs = len(self._valid_collision_pairs)
 
         # Initialize [info], which stores every data that must be considered mutable from Quadrants's perspective,
@@ -240,6 +242,7 @@ class Collider:
         self._collider_info = array_class.get_collider_info(
             self._solver,
             n_vert_neighbors,
+            n_vert_adj_faces,
             n_valid_pairs,
             self._collider_static_config,
             mc_perturbation=self._mc_perturbation,
@@ -253,6 +256,7 @@ class Collider:
         self._init_collision_pair_idx(self._collision_pair_idx)
         self._init_valid_pairs()
         self._init_verts_connectivity(vert_neighbors, vert_neighbor_start, vert_n_neighbors)
+        self._init_vert_adj_faces(vert_adj_faces, vert_adj_face_start, vert_adj_face_n)
         self._init_max_contact_pairs(self._n_possible_pairs, self._n_possible_nonconvex_pairs)
         self._init_terrain_state()
 
@@ -608,6 +612,40 @@ class Collider:
             self._collider_info.vert_neighbors.from_numpy(vert_neighbors)
             self._collider_info.vert_neighbor_start.from_numpy(vert_neighbor_start)
             self._collider_info.vert_n_neighbors.from_numpy(vert_n_neighbors)
+
+    def _compute_vert_adj_faces(self):
+        """
+        Compute vertex-to-adjacent-faces CSR adjacency arrays.
+
+        For each vertex, stores the indices of all mesh faces containing that vertex.
+        Analogous to _compute_verts_connectivity but maps vertices to faces instead of
+        vertices to vertices.  Used by func_potential_mesh_normals to replace the
+        O(n_faces) exhaustive scan with an O(degree) adjacency lookup.
+        """
+        import numpy as np
+        vert_adj_faces = []
+        vert_adj_face_start = []
+        vert_adj_face_n = []
+        offset = 0
+        for geom in self._solver.geoms:
+            # Global face indices for this geom's local faces
+            vert_adj_faces.append(geom.vert_adj_faces + geom.face_start)
+            vert_adj_face_start.append(geom.vert_adj_face_start + offset)
+            vert_adj_face_n.append(geom.vert_adj_face_n)
+            offset += len(geom.vert_adj_faces)
+
+        if self._solver.n_verts > 0:
+            vert_adj_faces = np.concatenate(vert_adj_faces, dtype=gs.np_int)
+            vert_adj_face_start = np.concatenate(vert_adj_face_start, dtype=gs.np_int)
+            vert_adj_face_n = np.concatenate(vert_adj_face_n, dtype=gs.np_int)
+
+        return vert_adj_faces, vert_adj_face_start, vert_adj_face_n
+
+    def _init_vert_adj_faces(self, vert_adj_faces, vert_adj_face_start, vert_adj_face_n):
+        if self._solver.n_verts > 0:
+            self._collider_info.vert_adj_faces.from_numpy(vert_adj_faces)
+            self._collider_info.vert_adj_face_start.from_numpy(vert_adj_face_start)
+            self._collider_info.vert_adj_face_n.from_numpy(vert_adj_face_n)
 
     def _init_max_contact_pairs(self, n_possible_pairs, n_possible_nonconvex_pairs):
         max_collision_pairs = min(self._solver.max_collision_pairs, n_possible_pairs)

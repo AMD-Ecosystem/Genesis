@@ -23,6 +23,7 @@ def func_multi_contact(
     geoms_info: array_class.GeomsInfo,
     verts_info: array_class.VertsInfo,
     faces_info: array_class.FacesInfo,
+    collider_info: array_class.ColliderInfo,
     gjk_state: array_class.GJKState,
     gjk_info: array_class.GJKInfo,
     i_ga,
@@ -100,7 +101,7 @@ def func_multi_contact(
         elif geom_type == gs.GEOM_TYPE.MESH:
             quat = quat_a if i_g0 == 0 else quat_b
             nnorms = func_potential_mesh_normals(
-                geoms_info, verts_info, faces_info, gjk_state, gjk_info, i_g, quat, i_b, nface, v1i, v2i, v3i
+                geoms_info, verts_info, faces_info, collider_info, gjk_state, gjk_info, i_g, quat, i_b, nface, v1i, v2i, v3i
             )
 
         for i_n in range(nnorms):
@@ -148,6 +149,7 @@ def func_multi_contact(
                     geoms_info,
                     verts_info,
                     faces_info,
+                    collider_info,
                     gjk_state,
                     gjk_info,
                     i_g,
@@ -503,6 +505,7 @@ def func_potential_mesh_normals(
     geoms_info: array_class.GeomsInfo,
     verts_info: array_class.VertsInfo,
     faces_info: array_class.FacesInfo,
+    collider_info: array_class.ColliderInfo,
     gjk_state: array_class.GJKState,
     gjk_info: array_class.GJKInfo,
     i_g,
@@ -532,33 +535,38 @@ def func_potential_mesh_normals(
     # Number of potential face normals
     n_normals = 0
 
-    # Exhaustive search for the face normals
-    # @TODO: This would require a lot of cost if the mesh is large. It would be better to precompute adjacency
-    # information in the solver and use it here.
-    face_start = geoms_info.face_start[i_g]
-    face_end = geoms_info.face_end[i_g]
+    # Use precomputed vertex-to-adjacent-faces adjacency (CSR) to avoid the O(n_faces) full scan.
+    # For a triangle simplex (dim==3) we only need faces adjacent to v1 (one face max).
+    # For an edge simplex (dim==2) we need faces adjacent to both v1 and v2 (at most two).
+    # For a point simplex (dim==1) we need all faces adjacent to v1.
+    # In every case the candidate set is O(vertex degree) ≈ 6-8 faces, vs. O(200-500) for a full scan.
+    adj_start = collider_info.vert_adj_face_start[v1]
+    adj_n = collider_info.vert_adj_face_n[v1]
 
-    for i_f in range(face_start, face_end):
+    for _k in range(adj_n):
+        i_f = collider_info.vert_adj_faces[adj_start + _k]
         face = faces_info[i_f].verts_idx
         has_vs = gs.qd_ivec3(0, 0, 0)
-        if v1 == face[0] or v1 == face[1] or v1 == face[2]:
-            has_vs[0] = 1
-        if v2 == face[0] or v2 == face[1] or v2 == face[2]:
-            has_vs[1] = 1
-        if v3 == face[0] or v3 == face[1] or v3 == face[2]:
-            has_vs[2] = 1
+        # v1 is guaranteed to be in this face (by construction of the adjacency), mark it
+        has_vs[0] = 1
+        if dim >= 2:
+            if v2 == face[0] or v2 == face[1] or v2 == face[2]:
+                has_vs[1] = 1
+        if dim >= 3:
+            if v3 == face[0] or v3 == face[1] or v3 == face[2]:
+                has_vs[2] = 1
 
         compute_normal = True
         for j in range(dim):
             compute_normal = compute_normal and (has_vs[j] == 1)
 
         if compute_normal:
-            v1pos = verts_info.init_pos[face[0]]
-            v2pos = verts_info.init_pos[face[1]]
-            v3pos = verts_info.init_pos[face[2]]
+            fv1pos = verts_info.init_pos[face[0]]
+            fv2pos = verts_info.init_pos[face[1]]
+            fv3pos = verts_info.init_pos[face[2]]
 
             # Compute the face normal
-            n = (v2pos - v1pos).cross(v3pos - v1pos)
+            n = (fv2pos - fv1pos).cross(fv3pos - fv1pos)
             n = n.normalized()
             n = gu.qd_transform_by_quat(n, quat)
 
@@ -675,6 +683,7 @@ def func_potential_mesh_edge_normals(
     geoms_info: array_class.GeomsInfo,
     verts_info: array_class.VertsInfo,
     faces_info: array_class.FacesInfo,
+    collider_info: array_class.ColliderInfo,
     gjk_state: array_class.GJKState,
     gjk_info: array_class.GJKInfo,
     i_g,
@@ -710,11 +719,12 @@ def func_potential_mesh_edge_normals(
         n_normals = 1
 
     elif dim == 1:
-        # If the nearest face is a point, consider every adjacent edge
-        # Exhaustive search for the edge normals
-        face_start = geoms_info.face_start[i_g]
-        face_end = geoms_info.face_end[i_g]
-        for i_f in range(face_start, face_end):
+        # If the nearest face is a point, consider every adjacent edge.
+        # Use precomputed vertex-to-adjacent-faces CSR to avoid O(n_faces) exhaustive scan.
+        adj_start = collider_info.vert_adj_face_start[v1i]
+        adj_n = collider_info.vert_adj_face_n[v1i]
+        for _k in range(adj_n):
+            i_f = collider_info.vert_adj_faces[adj_start + _k]
             face = faces_info[i_f].verts_idx
 
             v1_idx = -1

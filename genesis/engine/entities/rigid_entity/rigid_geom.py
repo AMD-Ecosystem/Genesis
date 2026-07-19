@@ -127,6 +127,20 @@ class RigidGeom(RBC):
         self.vert_n_neighbors = np.array(tuple(map(len, all_vert_neighbors_list)), dtype=gs.np_int)
         self.vert_neighbor_start = np.array((0, *np.cumsum(self.vert_n_neighbors)[:-1]), dtype=gs.np_int)
 
+        # Precompute vertex-to-adjacent-faces adjacency (CSR format).
+        # Used by func_potential_mesh_normals to replace O(n_faces) full scan with O(degree) lookup.
+        vert_adj_faces_list = [[] for _ in range(self.n_verts)]
+        for i_f, tri in enumerate(self._init_faces):
+            for v in tri:
+                vert_adj_faces_list[v].append(i_f)
+        self.vert_adj_faces = np.array(
+            tuple(chain.from_iterable(vert_adj_faces_list)), dtype=gs.np_int
+        )
+        self.vert_adj_face_n = np.array(tuple(map(len, vert_adj_faces_list)), dtype=gs.np_int)
+        self.vert_adj_face_start = np.array(
+            (0, *np.cumsum(self.vert_adj_face_n)[:-1]), dtype=gs.np_int
+        )
+
         # NOTE: sdf size is from the center of the lower voxel cell to the center of the upper voxel cell. Add
         # padding. The cell size is anisotropic - each axis is sized independently to its own extent - so a thin
         # slab gets fine resolution perpendicular to its surface without bloating the cell count along the long axes
