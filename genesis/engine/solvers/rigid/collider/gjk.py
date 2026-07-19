@@ -163,6 +163,7 @@ def clear_cache(gjk_state: array_class.GJKState, i_b):
     gjk_state.support_mesh_prev_vertex_id[i_b, 0] = -1
     gjk_state.support_mesh_prev_vertex_id[i_b, 1] = -1
     gjk_state.multi_contact_flag[i_b] = False
+    gjk_state.simplex_valid[i_b] = False
     gjk_state.last_searched_simplex_vertex_id[i_b] = 0
 
 
@@ -1255,39 +1256,33 @@ def func_safe_gjk(
     Montaut, Louis, et al. "Collision detection accelerated: An optimization perspective."
     https://arxiv.org/abs/2205.09663
     """
-    # Compute the initial tetrahedron using two random directions
+    # -----------------------------------------------------------------------
+    # GJK temporal coherence warm-start (AMD perf/gjk-temporal-coherence)
+    # When a valid 4-vertex simplex is cached from the previous frame, reuse
+    # the body-frame support points (local_obj1/2) with the current poses to
+    # reconstruct Minkowski-difference vertices, skipping the 4 axis-probe
+    # support queries.  Falls back to cold-start if no valid cache exists.
+    # -----------------------------------------------------------------------
     init_flag = RETURN_CODE.SUCCESS
-    gjk_state.simplex.nverts[i_b] = 0
-    for i in range(4):
-        dir = qd.Vector.zero(gs.qd_float, 3)
-        dir[2 - i // 2] = 1.0 - 2.0 * (i % 2)
+    if gjk_state.simplex_valid[i_b] and gjk_state.simplex.nverts[i_b] == 4:
+        # Warm-start path: recompute world-space verts from cached body-frame points.
+        for i in range(4):
+            lo1 = gjk_state.simplex_vertex.local_obj1[i_b, i]
+            lo2 = gjk_state.simplex_vertex.local_obj2[i_b, i]
+            w1 = gu.qd_transform_by_trans_quat(lo1, pos_a, quat_a)
+            w2 = gu.qd_transform_by_trans_quat(lo2, pos_b, quat_b)
+            gjk_state.simplex_vertex.obj1[i_b, i] = w1
+            gjk_state.simplex_vertex.obj2[i_b, i] = w2
+            gjk_state.simplex_vertex.mink[i_b, i] = w1 - w2
+        # Topology (id1, id2, nverts=4) carries over unchanged from previous frame.
+    else:
+        # Cold-start: build initial tetrahedron from 4 axis-aligned probe directions.
+        gjk_state.simplex.nverts[i_b] = 0
+        for i in range(4):
+            dir = qd.Vector.zero(gs.qd_float, 3)
+            dir[2 - i // 2] = 1.0 - 2.0 * (i % 2)
 
-        obj1, obj2, local_obj1, local_obj2, id1, id2, minkowski = func_safe_gjk_support(
-            geoms_info,
-            verts_info,
-            rigid_global_info,
-            static_rigid_sim_config,
-            collider_state,
-            collider_static_config,
-            gjk_state,
-            gjk_info,
-            support_field_info,
-            i_ga,
-            i_gb,
-            pos_a,
-            quat_a,
-            pos_b,
-            quat_b,
-            i_b,
-            dir,
-        )
-
-        # Check if the new vertex would make a valid simplex.
-        valid = func_is_new_simplex_vertex_valid(gjk_state, gjk_info, i_b, id1, id2, minkowski)
-
-        # If this is not a valid vertex, fall back to a brute-force routine to find a valid vertex.
-        if not valid:
-            obj1, obj2, local_obj1, local_obj2, id1, id2, minkowski, init_flag = func_search_valid_simplex_vertex(
+            obj1, obj2, local_obj1, local_obj2, id1, id2, minkowski = func_safe_gjk_support(
                 geoms_info,
                 verts_info,
                 rigid_global_info,
@@ -1304,19 +1299,47 @@ def func_safe_gjk(
                 pos_b,
                 quat_b,
                 i_b,
+                dir,
             )
-            # If the brute-force search failed, we cannot proceed with GJK.
-            if init_flag == RETURN_CODE.FAIL:
-                break
 
-        gjk_state.simplex_vertex.obj1[i_b, i] = obj1
-        gjk_state.simplex_vertex.obj2[i_b, i] = obj2
-        gjk_state.simplex_vertex.local_obj1[i_b, i] = local_obj1
-        gjk_state.simplex_vertex.local_obj2[i_b, i] = local_obj2
-        gjk_state.simplex_vertex.id1[i_b, i] = id1
-        gjk_state.simplex_vertex.id2[i_b, i] = id2
-        gjk_state.simplex_vertex.mink[i_b, i] = minkowski
-        gjk_state.simplex.nverts[i_b] += 1
+            # Check if the new vertex would make a valid simplex.
+            valid = func_is_new_simplex_vertex_valid(gjk_state, gjk_info, i_b, id1, id2, minkowski)
+
+            # If this is not a valid vertex, fall back to a brute-force routine to find a valid vertex.
+            if not valid:
+                obj1, obj2, local_obj1, local_obj2, id1, id2, minkowski, init_flag = func_search_valid_simplex_vertex(
+                    geoms_info,
+                    verts_info,
+                    rigid_global_info,
+                    static_rigid_sim_config,
+                    collider_state,
+                    collider_static_config,
+                    gjk_state,
+                    gjk_info,
+                    support_field_info,
+                    i_ga,
+                    i_gb,
+                    pos_a,
+                    quat_a,
+                    pos_b,
+                    quat_b,
+                    i_b,
+                )
+                # If the brute-force search failed, we cannot proceed with GJK.
+                if init_flag == RETURN_CODE.FAIL:
+                    break
+
+            gjk_state.simplex_vertex.obj1[i_b, i] = obj1
+            gjk_state.simplex_vertex.obj2[i_b, i] = obj2
+            gjk_state.simplex_vertex.local_obj1[i_b, i] = local_obj1
+            gjk_state.simplex_vertex.local_obj2[i_b, i] = local_obj2
+            gjk_state.simplex_vertex.id1[i_b, i] = id1
+            gjk_state.simplex_vertex.id2[i_b, i] = id2
+            gjk_state.simplex_vertex.mink[i_b, i] = minkowski
+            gjk_state.simplex.nverts[i_b] += 1
+
+    # Invalidate cache; will be re-armed only after a successful INTERSECT solve.
+    gjk_state.simplex_valid[i_b] = False
 
     gjk_flag = GJK_RETURN_CODE.SEPARATED
     if init_flag == RETURN_CODE.SUCCESS:
@@ -1418,6 +1441,8 @@ def func_safe_gjk(
 
     if gjk_flag == GJK_RETURN_CODE.INTERSECT:
         gjk_state.distance[i_b] = 0.0
+        # Arm warm-start: simplex is a valid 4-vertex tetrahedron containing the origin.
+        gjk_state.simplex_valid[i_b] = True
     else:
         gjk_flag = GJK_RETURN_CODE.SEPARATED
         gjk_state.distance[i_b] = gjk_info.FLOAT_MAX[None]
