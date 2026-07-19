@@ -575,12 +575,16 @@ def get_sort_buffer(solver):
 @dataclasses.dataclass(eq=True, kw_only=False, frozen=True)
 class ContactCache:
     normal: qd.Tensor
+    portal_v: qd.Tensor    # (4, n_possible_pairs, B) cached Minkowski difference portal vertices
+    portal_valid: qd.Tensor  # (n_possible_pairs, B) bool, whether cached portal is usable
 
 
 def get_contact_cache(solver, n_possible_pairs):
     _B = solver._B
     return ContactCache(
         normal=V_VEC(3, dtype=gs.qd_float, shape=(n_possible_pairs, _B)),
+        portal_v=V_VEC(3, dtype=gs.qd_float, shape=(4, n_possible_pairs, _B)),
+        portal_valid=V(dtype=gs.qd_bool, shape=(n_possible_pairs, _B)),
     )
 
 
