@@ -701,24 +701,81 @@ def func_mpr_contact_from_centers(
     quat_a: qd.types.vector(4, dtype=gs.qd_float),
     pos_b: qd.types.vector(3, dtype=gs.qd_float),
     quat_b: qd.types.vector(4, dtype=gs.qd_float),
+    i_pair=qd.static(-1),
 ):
-    res = mpr_discover_portal(
-        geoms_info=geoms_info,
-        support_field_info=support_field_info,
-        collider_state=collider_state,
-        collider_static_config=collider_static_config,
-        mpr_state=mpr_state,
-        mpr_info=mpr_info,
-        i_ga=i_ga,
-        i_gb=i_gb,
-        i_b=i_b,
-        center_a=center_a,
-        center_b=center_b,
-        pos_a=pos_a,
-        quat_a=quat_a,
-        pos_b=pos_b,
-        quat_b=quat_b,
-    )
+    # Portal persistence warm-start: if a valid portal was cached from the previous frame,
+    # restore it into mpr_state and check whether it still encapsulates the origin.
+    # If yes, skip mpr_discover_portal entirely (saves 3-5 support queries per pair).
+    # Portal persistence warm-start: pre-declare res=0 (warm-start success default).
+    # Quadrants rule: variables must be pre-declared in outer scope.
+    # We assign res=0 meaning "portal already valid, skip discover_portal".
+    # If no valid cached portal, we call mpr_discover_portal and overwrite res.
+    res = 0
+    if i_pair >= 0:
+        if collider_state.contact_cache.portal_valid[i_pair, i_b]:
+            # Restore cached portal into mpr_state (vertices 1, 2, 3; vertex 0 = center diff)
+            mpr_state.simplex_support.v[0, i_b] = center_a - center_b
+            mpr_state.simplex_support.v[1, i_b] = collider_state.contact_cache.portal_v[1, i_pair, i_b]
+            mpr_state.simplex_support.v[2, i_b] = collider_state.contact_cache.portal_v[2, i_pair, i_b]
+            mpr_state.simplex_support.v[3, i_b] = collider_state.contact_cache.portal_v[3, i_pair, i_b]
+            mpr_state.simplex_size[i_b] = 4
+            direction = mpr_portal_dir(mpr_state, i_ga, i_gb, i_b)
+            # mpr_portal_encapsules_origin returns True if the cached portal is still valid.
+            # If valid, res stays 0 (skip discover_portal). If invalid, fall through to discover.
+            if not mpr_portal_encapsules_origin(mpr_state, mpr_info, direction, i_ga, i_gb, i_b):
+                res = mpr_discover_portal(
+                    geoms_info=geoms_info,
+                    support_field_info=support_field_info,
+                    collider_state=collider_state,
+                    collider_static_config=collider_static_config,
+                    mpr_state=mpr_state,
+                    mpr_info=mpr_info,
+                    i_ga=i_ga,
+                    i_gb=i_gb,
+                    i_b=i_b,
+                    center_a=center_a,
+                    center_b=center_b,
+                    pos_a=pos_a,
+                    quat_a=quat_a,
+                    pos_b=pos_b,
+                    quat_b=quat_b,
+                )
+        if not collider_state.contact_cache.portal_valid[i_pair, i_b]:
+            res = mpr_discover_portal(
+                geoms_info=geoms_info,
+                support_field_info=support_field_info,
+                collider_state=collider_state,
+                collider_static_config=collider_static_config,
+                mpr_state=mpr_state,
+                mpr_info=mpr_info,
+                i_ga=i_ga,
+                i_gb=i_gb,
+                i_b=i_b,
+                center_a=center_a,
+                center_b=center_b,
+                pos_a=pos_a,
+                quat_a=quat_a,
+                pos_b=pos_b,
+                quat_b=quat_b,
+            )
+    if i_pair < 0:
+        res = mpr_discover_portal(
+            geoms_info=geoms_info,
+            support_field_info=support_field_info,
+            collider_state=collider_state,
+            collider_static_config=collider_static_config,
+            mpr_state=mpr_state,
+            mpr_info=mpr_info,
+            i_ga=i_ga,
+            i_gb=i_gb,
+            i_b=i_b,
+            center_a=center_a,
+            center_b=center_b,
+            pos_a=pos_a,
+            quat_a=quat_a,
+            pos_b=pos_b,
+            quat_b=quat_b,
+        )
 
     is_col = False
     pos = gs.qd_vec3([0.0, 0.0, 0.0])
@@ -730,6 +787,13 @@ def func_mpr_contact_from_centers(
     elif res == 2:
         is_col, normal, penetration, pos = mpr_find_penetr_segment(mpr_state, i_ga, i_gb, i_b)
     elif res == 0:
+        # Store the discovered portal for next-frame warm-start before refining
+        if i_pair >= 0:
+            collider_state.contact_cache.portal_v[1, i_pair, i_b] = mpr_state.simplex_support.v[1, i_b]
+            collider_state.contact_cache.portal_v[2, i_pair, i_b] = mpr_state.simplex_support.v[2, i_b]
+            collider_state.contact_cache.portal_v[3, i_pair, i_b] = mpr_state.simplex_support.v[3, i_b]
+            collider_state.contact_cache.portal_valid[i_pair, i_b] = True
+
         res = mpr_refine_portal(
             geoms_info,
             collider_state,
@@ -784,6 +848,7 @@ def func_mpr_contact(
     quat_a: qd.types.vector(4, dtype=gs.qd_float),
     pos_b: qd.types.vector(3, dtype=gs.qd_float),
     quat_b: qd.types.vector(4, dtype=gs.qd_float),
+    i_pair=qd.static(-1),
 ):
     center_a, center_b = guess_geoms_center(
         geoms_info,
@@ -816,6 +881,7 @@ def func_mpr_contact(
         quat_a=quat_a,
         pos_b=pos_b,
         quat_b=quat_b,
+        i_pair=i_pair,
     )
 
 

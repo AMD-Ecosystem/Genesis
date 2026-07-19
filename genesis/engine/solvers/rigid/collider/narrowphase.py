@@ -1214,6 +1214,7 @@ def func_convex_convex_contact(
                                     ga_quat_current,
                                     gb_pos_current,
                                     gb_quat_current,
+                                    i_pair,
                                 )
                                 is_mpr_updated = True
 
@@ -1279,6 +1280,8 @@ def func_convex_convex_contact(
                                     ga_quat_current,
                                     gb_pos_current,
                                     gb_quat_current,
+                                    i_pair,
+                                    collider_info.max_possible_pairs[None],
                                 )
 
                             is_col = gjk_state.is_col[i_b] == 1
@@ -1410,6 +1413,10 @@ def func_convex_convex_contact(
                 else:
                     # Clear collision normal cache if not in contact
                     collider_state.contact_cache.normal[i_pair, i_b] = qd.Vector.zero(gs.qd_float, 3)
+                    if qd.static(
+                        collider_static_config.ccd_algorithm in (CCD_ALGORITHM_CODE.MPR, CCD_ALGORITHM_CODE.MJ_MPR)
+                    ):
+                        collider_state.contact_cache.portal_valid[i_pair, i_b] = False
             elif multi_contact and is_col:
                 # For perturbed iterations (i_detection > 0), correct contact position and normal. This applies to all
                 # collision methods when multi-contact is enabled, except mujoco compatible.
@@ -1616,6 +1623,7 @@ def _func_multicontact_run_detection(
                             ga_quat,
                             gb_pos,
                             gb_quat,
+                            i_pair,
                         )
                         is_mpr_updated = True
 
@@ -2070,6 +2078,10 @@ def _func_multicontact_gjk_full(
                         collider_state.contact_cache.normal[i_pair, i_b] = normal
                 else:
                     collider_state.contact_cache.normal[i_pair, i_b] = qd.Vector.zero(gs.qd_float, 3)
+                    if qd.static(
+                        collider_static_config.ccd_algorithm in (CCD_ALGORITHM_CODE.MPR, CCD_ALGORITHM_CODE.MJ_MPR)
+                    ):
+                        collider_state.contact_cache.portal_valid[i_pair, i_b] = False
             elif not gjk_multi_done and multi_contact and is_col:
                 contact_pos = func_apply_smooth_refinement(
                     i_ga,
@@ -2554,6 +2566,7 @@ def _func_narrowphase_contact0(
                                 ga_quat,
                                 gb_pos,
                                 gb_quat,
+                                i_pair,
                             )
                             is_mpr_updated = True
 
