@@ -215,8 +215,8 @@ def func_gjk_contact(
     # Per-pair cross-frame warm-start: load stable simplex from pair-indexed cache
     # AFTER clear_cache so the working simplex_valid=True flag is NOT overwritten.
     # i_pair >= 0 means a stable dense pair index was passed by the caller.
-    if qd.static(i_pair >= 0):
-        if qd.static(n_possible_pairs > 0):
+    if i_pair >= 0:
+        if n_possible_pairs > 0:
             if gjk_state.simplex_pair_valid[i_pair, i_b]:
                 gjk_state.simplex_valid[i_b] = True
                 gjk_state.simplex.nverts[i_b] = gjk_state.simplex_pair_nverts[i_pair, i_b]
@@ -411,8 +411,8 @@ def func_gjk_contact(
         )
         if gjk_flag == GJK_RETURN_CODE.INTERSECT:
             # Write back 4-vertex simplex to stable per-pair cache for next frame.
-            if qd.static(i_pair >= 0):
-                if qd.static(n_possible_pairs > 0):
+            if i_pair >= 0:
+                if n_possible_pairs > 0:
                     gjk_state.simplex_pair_valid[i_pair, i_b] = True
                     gjk_state.simplex_pair_nverts[i_pair, i_b] = gjk_state.simplex.nverts[i_b]
                     for _i in qd.static(range(4)):
