@@ -2971,7 +2971,7 @@ class RigidSolver(KinematicSolver):
         return gs.List(equality for entity in self._entities for equality in entity.equalities)
 
 
-@qd.kernel(fastcache=gs.use_fastcache, fn_attrs={"amdgpu": {"amdgpu-waves-per-eu": "1,4"}})
+@qd.kernel(fastcache=gs.use_fastcache, fn_attrs={"amdgpu": {"amdgpu-waves-per-eu": "3,4"}})
 def kernel_step_1(
     links_state: array_class.LinksState,
     links_info: array_class.LinksInfo,
