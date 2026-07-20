@@ -1027,6 +1027,10 @@ def func_convex_convex_contact(
     # FIXME: Passing nested data structure as input argument is not supported for now.
     diff_contact_input: array_class.DiffContactInput,
     errno: qd.Tensor,
+    ga_pos=None,
+    ga_quat=None,
+    gb_pos=None,
+    gb_quat=None,
 ):
     if not (geoms_info.type[i_ga] == gs.GEOM_TYPE.PLANE and geoms_info.type[i_gb] == gs.GEOM_TYPE.BOX):
         EPS = rigid_global_info.EPS[None]
@@ -1057,10 +1061,11 @@ def func_convex_convex_contact(
 
         # Load original geometry state into thread-local variables
         # These are the UNPERTURBED states used as reference point for each independent perturbation
-        ga_pos_original = geoms_state.pos[i_ga, i_b]
-        ga_quat_original = geoms_state.quat[i_ga, i_b]
-        gb_pos_original = geoms_state.pos[i_gb, i_b]
-        gb_quat_original = geoms_state.quat[i_gb, i_b]
+        # Use LDS-cached pos/quat if provided by caller (narrowphase kernel), else fall back to HBM.
+        ga_pos_original = ga_pos if ga_pos is not None else geoms_state.pos[i_ga, i_b]
+        ga_quat_original = ga_quat if ga_quat is not None else geoms_state.quat[i_ga, i_b]
+        gb_pos_original = gb_pos if gb_pos is not None else geoms_state.pos[i_gb, i_b]
+        gb_quat_original = gb_quat if gb_quat is not None else geoms_state.quat[i_gb, i_b]
 
         # Current (possibly perturbed) state - initialized to original, updated during perturbations
         ga_pos_current = ga_pos_original
@@ -1259,6 +1264,7 @@ def func_convex_convex_contact(
                                     diff_normal_tolerance,
                                 )
                             else:
+                                gjk_state.epa_normal_hint[i_b] = collider_state.contact_cache.normal[i_pair, i_b]
                                 gjk.func_gjk_contact(
                                     geoms_state,
                                     geoms_info,
@@ -1622,6 +1628,7 @@ def _func_multicontact_run_detection(
         if qd.static(collider_static_config.ccd_algorithm != CCD_ALGORITHM_CODE.MJ_MPR):
             if use_gjk:
                 if qd.static(not static_rigid_sim_config.requires_grad):
+                    gjk_state.epa_normal_hint[i_b] = collider_state.contact_cache.normal[i_pair, i_b]
                     gjk.func_gjk_contact(
                         geoms_state,
                         geoms_info,
@@ -2663,8 +2670,33 @@ def func_narrow_phase_convex_vs_convex(
 ):
     _B = collider_state.active_buffer.shape[1]
 
-    qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    # LDS geom pos/quat tile: 16 envs per block (1 thread per env).
+    # Each thread loads all geom pos/quat for its env into LDS once, then the pair
+    # loop reads from LDS instead of HBM (~150 pairs * 2 geoms * 7 floats = ~2100 HBM
+    # reads/env saved). LDS: 16 * MAX_GEOMS * 7 * 4 = 16 * 60 * 7 * 4 = 26,880 B < 64 KB.
+    _ENVS_PER_BLOCK = qd.static(16)
+    _N_GEOMS = qd.static(geoms_state.pos.shape[0])
+    qd.loop_config(
+        serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL,
+        block_dim=_ENVS_PER_BLOCK,
+    )
     for i_b in range(_B):
+        # Cooperatively load geom pos/quat into LDS for this env's block slot.
+        _slot = i_b % _ENVS_PER_BLOCK
+        _pos_lds = qd.simt.block.SharedArray((_ENVS_PER_BLOCK, _N_GEOMS, 3), gs.qd_float)
+        _quat_lds = qd.simt.block.SharedArray((_ENVS_PER_BLOCK, _N_GEOMS, 4), gs.qd_float)
+        for _ig in range(_N_GEOMS):
+            _p = geoms_state.pos[_ig, i_b]
+            _q = geoms_state.quat[_ig, i_b]
+            _pos_lds[_slot, _ig, 0] = _p[0]
+            _pos_lds[_slot, _ig, 1] = _p[1]
+            _pos_lds[_slot, _ig, 2] = _p[2]
+            _quat_lds[_slot, _ig, 0] = _q[0]
+            _quat_lds[_slot, _ig, 1] = _q[1]
+            _quat_lds[_slot, _ig, 2] = _q[2]
+            _quat_lds[_slot, _ig, 3] = _q[3]
+        # No cross-thread sync needed: each thread reads only its own _slot.
+
         for i_pair in range(collider_state.n_broad_pairs[i_b]):
             i_ga = collider_state.broad_collision_pairs[i_pair, i_b][0]
             i_gb = collider_state.broad_collision_pairs[i_pair, i_b][1]
@@ -2683,6 +2715,11 @@ def func_narrow_phase_convex_vs_convex(
                 )
             ):
                 if not (geoms_info.type[i_ga] == gs.GEOM_TYPE.PLANE and geoms_info.type[i_gb] == gs.GEOM_TYPE.BOX):
+                    # Reconstruct vec3/vec4 from LDS for this pair's geoms.
+                    _cga_pos = qd.Vector(_pos_lds[_slot, i_ga, 0], _pos_lds[_slot, i_ga, 1], _pos_lds[_slot, i_ga, 2])
+                    _cga_quat = qd.Vector(_quat_lds[_slot, i_ga, 0], _quat_lds[_slot, i_ga, 1], _quat_lds[_slot, i_ga, 2], _quat_lds[_slot, i_ga, 3])
+                    _cgb_pos = qd.Vector(_pos_lds[_slot, i_gb, 0], _pos_lds[_slot, i_gb, 1], _pos_lds[_slot, i_gb, 2])
+                    _cgb_quat = qd.Vector(_quat_lds[_slot, i_gb, 0], _quat_lds[_slot, i_gb, 1], _quat_lds[_slot, i_gb, 2], _quat_lds[_slot, i_gb, 3])
                     func_convex_convex_contact(
                         i_ga=i_ga,
                         i_gb=i_gb,
@@ -2708,6 +2745,10 @@ def func_narrow_phase_convex_vs_convex(
                         # FIXME: Passing nested data structure as input argument is not supported for now.
                         diff_contact_input=diff_contact_input,
                         errno=errno,
+                        ga_pos=_cga_pos,
+                        ga_quat=_cga_quat,
+                        gb_pos=_cgb_pos,
+                        gb_quat=_cgb_quat,
                     )
 
 
