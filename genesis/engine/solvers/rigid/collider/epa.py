@@ -1010,6 +1010,25 @@ def func_safe_epa(
         # If the objects are discrete, we do not use tolerance.
         tolerance = rigid_global_info.EPS[None]
 
+    # EPA normal warm-start: seed upper bound from cached contact normal (prior frame).
+    # A single extra support query in the cached direction tightens the upper bound,
+    # potentially allowing the main loop to converge 1-2 iterations early.
+    epa_hint = gjk_state.epa_normal_hint[i_b]
+    epa_hint_norm = epa_hint.norm()
+    if epa_hint_norm > gjk_info.FLOAT_MIN[None]:
+        hint_dir = epa_hint / epa_hint_norm
+        wi_hint = func_epa_support(
+            geoms_info, verts_info, static_rigid_sim_config,
+            collider_state, collider_static_config, gjk_state, gjk_info,
+            support_field_info, i_ga, i_gb, pos_a, quat_a, pos_b, quat_b,
+            i_b, hint_dir, 1.0,
+        )
+        w_hint = gjk_state.polytope_verts.mink[i_b, wi_hint]
+        upper_hint = w_hint.dot(hint_dir)
+        if upper_hint < upper:
+            upper = upper_hint
+            upper2 = upper ** 2
+
     k_max = gjk_info.epa_max_iterations[None]
     for k in range(k_max):
         prev_nearest_i_f = nearest_i_f

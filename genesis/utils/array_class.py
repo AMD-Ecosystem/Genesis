@@ -1179,6 +1179,7 @@ class GJKState:
     is_col: qd.Tensor
     penetration: qd.Tensor
     distance: qd.Tensor
+    epa_normal_hint: qd.Tensor  # cached EPA normal for warm-start
     # Differentiable contact detection
     diff_contact_input: DiffContactInput
     n_diff_contact_input: qd.Tensor
@@ -1227,6 +1228,7 @@ def get_gjk_state(_B, static_rigid_sim_config, gjk_info, is_active, requires_gra
         diff_contact_input=get_diff_contact_input(_B, max(max_contacts_per_pair, 1), is_active, requires_grad),
         n_diff_contact_input=V(dtype=gs.qd_int, shape=(_B,)),
         diff_penetration=V(dtype=gs.qd_float, shape=maybe_shape((_B, max_contacts_per_pair), requires_grad)),
+        epa_normal_hint=V_VEC(3, dtype=gs.qd_float, shape=(_B,)),
     )
 
 
