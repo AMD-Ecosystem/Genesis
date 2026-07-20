@@ -1282,6 +1282,7 @@ def get_gjk_state_contact_only(_B):
         distance=V(dtype=gs.qd_float, shape=(_B,)),
         diff_contact_input=get_diff_contact_input(_dummy_B, 1, is_active=False),
         n_diff_contact_input=V(dtype=gs.qd_int, shape=(1,)),
+        epa_normal_hint=V_VEC(3, dtype=gs.qd_float, shape=(_dummy_B,)),
         diff_penetration=V(dtype=gs.qd_float, shape=()),
     )
 
