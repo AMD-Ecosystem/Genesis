@@ -2971,7 +2971,15 @@ class RigidSolver(KinematicSolver):
         return gs.List(equality for entity in self._entities for equality in entity.equalities)
 
 
-@qd.kernel(fastcache=gs.use_fastcache, fn_attrs={"amdgpu": {"amdgpu-waves-per-eu": "3,4"}})
+# ARBOR OPTIMIZATION: Changed "3,4" to "1,4" to match kernel_step_2 occupancy hint.
+# Original "3,4" forced the compiler to target 3 waves/EU, causing it to aggressively
+# compress VGPRs, which triggered occupancy warnings at compile time:
+#   kernel_3_range_for: desired 3, final 1 (register spilling to HBM scratch!)
+#   kernel_6_range_for: desired 3, final 2
+# With "1,4" (min=1, max=4), the compiler can allocate VGPRs naturally for each
+# sub-kernel, eliminating register spilling without losing the ability to pack
+# multiple waves where it naturally fits.
+@qd.kernel(fastcache=gs.use_fastcache, fn_attrs={"amdgpu": {"amdgpu-waves-per-eu": "1,4"}})
 def kernel_step_1(
     links_state: array_class.LinksState,
     links_info: array_class.LinksInfo,

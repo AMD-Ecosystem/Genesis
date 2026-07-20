@@ -763,7 +763,9 @@ def _add_collision_constraints_per_contact(
     n_dofs = dofs_state.ctrl_mode.shape[0]
     max_contact_pairs = collider_state.contact_data.link_a.shape[0]
 
-    qd.loop_config(name="add_collision_constraints", serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    # ARBOR OPTIMIZATION (Patch D1): pin block_dim=64 to match gfx942 wave64 lane width.
+    # Without this, Quadrants launches 32-thread workgroups that mask 32 of the 64 lanes.
+    qd.loop_config(name="add_collision_constraints", serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, block_dim=64)
     for flat_idx in range(max_contact_pairs * _B):
         i_b = flat_idx % _B
         i_col_ = flat_idx // _B
@@ -1477,9 +1479,11 @@ def add_frictionloss_constraints(
     # TODO: sparse mode
     # FIXME: The condition `if dofs_info.frictionloss[I_d] > EPS:` is not correctly evaluated on Apple Metal
     # if `serialize=True`...
+    # ARBOR OPTIMIZATION (Patch D1): pin block_dim=64, eliminating 50% lane-masking on gfx942.
     qd.loop_config(
         name="add_frictionloss_constraints",
         serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL and gs.backend != gs.metal),
+        block_dim=64,
     )
     for i_b in range(_B):
         constraint_state.n_constraints_frictionloss[i_b] = 0
@@ -4033,7 +4037,8 @@ def func_solve_init(
                 else:
                     constraint_state.qacc[i_d, i_b] = dofs_state.acc_smooth[i_d, i_b]
         else:
-            qd.loop_config(name="from_warmstart", serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+            # ARBOR OPTIMIZATION (Patch D5): block_dim=64 for wave64 lane utilization.
+            qd.loop_config(name="from_warmstart", serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL, block_dim=64)
             for i_d, i_b in qd.ndrange(n_dofs, _B):
                 if constraint_state.n_constraints[i_b] > 0 and constraint_state.is_warmstart[i_b]:
                     constraint_state.qacc[i_d, i_b] = constraint_state.qacc_ws[i_d, i_b]
@@ -4205,6 +4210,8 @@ def _get_static_config(*args, **kwargs):
 #      compete) that periodic churn is the dominant RL-scaling throughput regression. Disable it (repeat_after_seconds=0):
 #      the workload is steady, so we pick once during warmup and then run the winning variant for the whole timed
 #      window with zero dispatch overhead (the chosen impl is served from the cached fast path).
+# ARBOR OPTIMIZATION: repeat_after_seconds=0 prevents perf_dispatch re-benchmarking
+# during the timed window. Pick once during warmup, run winning variant for whole session.
 @qd.perf_dispatch(
     get_geometry_hash=lambda *args, **kwargs: (*args, frozendict(kwargs)),
     first_warmup=3,

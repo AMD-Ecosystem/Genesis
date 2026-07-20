@@ -1011,7 +1011,16 @@ class KinematicSolver(Solver):
         return tensor[0] if self.n_envs == 0 else tensor
 
     def get_links_quat(self, links_idx=None, envs_idx=None):
-        tensor = qd_to_torch(self.links_state.quat, envs_idx, links_idx, transpose=True, copy=True)
+        # ARBOR OPTIMIZATION: Use zerocopy view + slice-then-clone to avoid cloning the
+        # full (n_envs, n_links, 4) tensor when only a subset of links is needed.
+        # With use_zerocopy=True (default on AMD), the original copy=True cloned the entire
+        # tensor before slicing. This optimization clones only the required slice.
+        if gs.use_zerocopy and links_idx is not None:
+            full_view = qd_to_torch(self.links_state.quat, None, None, transpose=True, copy=False)
+            mask = indices_to_mask(envs_idx, links_idx)
+            tensor = full_view[mask].clone()
+        else:
+            tensor = qd_to_torch(self.links_state.quat, envs_idx, links_idx, transpose=True, copy=True)
         return tensor[0] if self.n_envs == 0 else tensor
 
     def get_links_vel(self, links_idx=None, envs_idx=None):
@@ -1032,7 +1041,13 @@ class KinematicSolver(Solver):
         return _tensor
 
     def get_links_ang(self, links_idx=None, envs_idx=None):
-        tensor = qd_to_torch(self.links_state.cd_ang, envs_idx, links_idx, transpose=True, copy=True)
+        # ARBOR OPTIMIZATION: Use zerocopy view + slice-then-clone (see get_links_quat).
+        if gs.use_zerocopy and links_idx is not None:
+            full_view = qd_to_torch(self.links_state.cd_ang, None, None, transpose=True, copy=False)
+            mask = indices_to_mask(envs_idx, links_idx)
+            tensor = full_view[mask].clone()
+        else:
+            tensor = qd_to_torch(self.links_state.cd_ang, envs_idx, links_idx, transpose=True, copy=True)
         return tensor[0] if self.n_envs == 0 else tensor
 
     def _build_dof_to_q_map(self, dofs_idx_t):

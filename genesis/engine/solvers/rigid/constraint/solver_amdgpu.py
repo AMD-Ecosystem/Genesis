@@ -2496,7 +2496,14 @@ def func_linesearch_batch_tiled_wc(
     return res_alpha
 
 
-@qd.kernel(fastcache=gs.use_fastcache)
+# ARBOR OPTIMIZATION (Patch C2): Add explicit fn_attrs to tiled_wc CG solver.
+# The JIT default applies "1,2" (min=1, max=2 waves/EU) to this kernel, which
+# causes the compiler to try limiting VGPRs to <=256/wavefront (to fit 2 waves).
+# The kernel actually achieves only 1 wave/EU (VGPR > 256), but the compiler
+# still wastes effort on compression. Setting "1,1" (no max constraint) lets the
+# compiler allocate VGPRs freely, potentially generating better code for the
+# 39.2%-of-GPU-time CG solver iteration loop.
+@qd.kernel(fastcache=gs.use_fastcache, fn_attrs={"amdgpu": {"amdgpu-waves-per-eu": "1,1"}})
 def _kernel_solve_body_tiled_wc_amdgpu(
     entities_info: array_class.EntitiesInfo,
     dofs_state: array_class.DofsState,
