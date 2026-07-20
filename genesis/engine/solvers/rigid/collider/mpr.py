@@ -713,11 +713,16 @@ def func_mpr_contact_from_centers(
     res = 0
     if i_pair >= 0:
         if collider_state.contact_cache.portal_valid[i_pair, i_b]:
-            # Restore cached portal into mpr_state (vertices 1, 2, 3; vertex 0 = center diff)
+            # Restore cached portal into mpr_state (vertices 1, 2, 3; vertex 0 = center diff).
+            # Also restore v1[1..3] and v2[1..3] (individual body support points) so that
+            # mpr_find_pos produces the correct contact position on a warm-start hit.
             mpr_state.simplex_support.v[0, i_b] = center_a - center_b
-            mpr_state.simplex_support.v[1, i_b] = collider_state.contact_cache.portal_v[1, i_pair, i_b]
-            mpr_state.simplex_support.v[2, i_b] = collider_state.contact_cache.portal_v[2, i_pair, i_b]
-            mpr_state.simplex_support.v[3, i_b] = collider_state.contact_cache.portal_v[3, i_pair, i_b]
+            mpr_state.simplex_support.v1[0, i_b] = center_a
+            mpr_state.simplex_support.v2[0, i_b] = center_b
+            for _i in qd.static(range(1, 4)):
+                mpr_state.simplex_support.v[_i, i_b] = collider_state.contact_cache.portal_v[_i, i_pair, i_b]
+                mpr_state.simplex_support.v1[_i, i_b] = collider_state.contact_cache.portal_v1[_i, i_pair, i_b]
+                mpr_state.simplex_support.v2[_i, i_b] = collider_state.contact_cache.portal_v2[_i, i_pair, i_b]
             mpr_state.simplex_size[i_b] = 4
             direction = mpr_portal_dir(mpr_state, i_ga, i_gb, i_b)
             # mpr_portal_encapsules_origin returns True if the cached portal is still valid.
@@ -740,7 +745,8 @@ def func_mpr_contact_from_centers(
                     pos_b=pos_b,
                     quat_b=quat_b,
                 )
-        if not collider_state.contact_cache.portal_valid[i_pair, i_b]:
+        elif not collider_state.contact_cache.portal_valid[i_pair, i_b]:
+            # Cold-start path: no cached portal exists for this pair.
             res = mpr_discover_portal(
                 geoms_info=geoms_info,
                 support_field_info=support_field_info,
@@ -758,7 +764,7 @@ def func_mpr_contact_from_centers(
                 pos_b=pos_b,
                 quat_b=quat_b,
             )
-    if i_pair < 0:
+    else:  # i_pair < 0: terrain or uncached path — always cold-start
         res = mpr_discover_portal(
             geoms_info=geoms_info,
             support_field_info=support_field_info,
@@ -787,11 +793,16 @@ def func_mpr_contact_from_centers(
     elif res == 2:
         is_col, normal, penetration, pos = mpr_find_penetr_segment(mpr_state, i_ga, i_gb, i_b)
     elif res == 0:
-        # Store the discovered portal for next-frame warm-start before refining
+        # Store the discovered portal (v, v1, v2) for next-frame warm-start before refining.
+        # v1 and v2 are the individual body support points needed by mpr_find_pos.
+        # NOTE: We store the pre-refinement portal here. mpr_refine_portal may expand the portal
+        # further, but storing before refinement is safe: the pre-refinement portal is valid
+        # (encapsulates origin) and will be re-validated on next frame before use.
         if i_pair >= 0:
-            collider_state.contact_cache.portal_v[1, i_pair, i_b] = mpr_state.simplex_support.v[1, i_b]
-            collider_state.contact_cache.portal_v[2, i_pair, i_b] = mpr_state.simplex_support.v[2, i_b]
-            collider_state.contact_cache.portal_v[3, i_pair, i_b] = mpr_state.simplex_support.v[3, i_b]
+            for _i in qd.static(range(1, 4)):
+                collider_state.contact_cache.portal_v[_i, i_pair, i_b] = mpr_state.simplex_support.v[_i, i_b]
+                collider_state.contact_cache.portal_v1[_i, i_pair, i_b] = mpr_state.simplex_support.v1[_i, i_b]
+                collider_state.contact_cache.portal_v2[_i, i_pair, i_b] = mpr_state.simplex_support.v2[_i, i_b]
             collider_state.contact_cache.portal_valid[i_pair, i_b] = True
 
         res = mpr_refine_portal(
