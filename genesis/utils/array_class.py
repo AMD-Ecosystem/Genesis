@@ -1182,6 +1182,7 @@ class GJKState:
     # Differentiable contact detection
     diff_contact_input: DiffContactInput
     n_diff_contact_input: qd.Tensor
+    epa_normal_hint: qd.Tensor
     diff_penetration: qd.Tensor
 
 
