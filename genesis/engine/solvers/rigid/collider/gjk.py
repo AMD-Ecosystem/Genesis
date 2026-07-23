@@ -1792,6 +1792,12 @@ def func_safe_gjk_support(
     id1 = gs.qd_int(-1)
     id2 = gs.qd_int(-1)
     mink = obj1 - obj2
+    # OPT: cache vertex IDs from i=0 to skip support-field trig/HBM for i=1..8.
+    # EPS-scale perturbations map to the same spherical grid cells (documented
+    # above), so _func_support_world returns the same vid every time. We reuse
+    # the cached vid and call func_get_discrete_geom_vertex directly instead.
+    cached_id1 = gs.qd_int(-1)
+    cached_id2 = gs.qd_int(-1)
 
     for i in range(9):
         n_dir = dir
@@ -1810,32 +1816,47 @@ def func_safe_gjk_support(
             i_g = i_ga if j == 0 else i_gb
             pos = pos_a if j == 0 else pos_b
             quat = quat_a if j == 0 else quat_b
+            cached_id = cached_id1 if j == 0 else cached_id2
 
-            sp, local_sp, si = support_driver(
-                geoms_info,
-                verts_info,
-                static_rigid_sim_config,
-                collider_state,
-                collider_static_config,
-                gjk_state,
-                gjk_info,
-                support_field_info,
-                d,
-                i_g,
-                pos,
-                quat,
-                i_b,
-                j,
-                False,
-            )
+            # OPT: For perturbation iterations (i>0), skip the support field
+            # (atan2+acos+4 HBM reads) by reusing cached_id from i=0.
+            # Only valid for mesh geoms where support field is used; for other
+            # geom types (sphere, capsule, box) we still call support_driver.
+            if i > 0 and cached_id >= 0:
+                sp, local_sp = func_get_discrete_geom_vertex(
+                    geoms_info, verts_info, i_g, pos, quat, cached_id
+                )
+                si = cached_id
+            else:
+                sp, local_sp, si = support_driver(
+                    geoms_info,
+                    verts_info,
+                    static_rigid_sim_config,
+                    collider_state,
+                    collider_static_config,
+                    gjk_state,
+                    gjk_info,
+                    support_field_info,
+                    d,
+                    i_g,
+                    pos,
+                    quat,
+                    i_b,
+                    j,
+                    False,
+                )
             if j == 0:
                 obj1 = sp
                 local_obj1 = local_sp
                 id1 = si
+                if i == 0:
+                    cached_id1 = si  # cache after i=0 call
             else:
                 obj2 = sp
                 local_obj2 = local_sp
                 id2 = si
+                if i == 0:
+                    cached_id2 = si  # cache after i=0 call
 
         mink = obj1 - obj2
 
