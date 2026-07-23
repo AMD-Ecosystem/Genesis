@@ -1821,13 +1821,20 @@ def func_safe_gjk_support(
             # OPT: For perturbation iterations (i>0), skip the support field
             # (atan2+acos+4 HBM reads) by reusing cached_id from i=0.
             # Only valid for mesh geoms where support field is used; for other
-            # geom types (sphere, capsule, box) we still call support_driver.
+            # geom types (sphere, capsule, box) cached_id stays -1 so we always
+            # call support_driver for them.
+            # Initialize sp/local_sp/si on all paths (Quadrants requires this).
+            sp = gs.qd_vec3(0.0, 0.0, 0.0)
+            local_sp = gs.qd_vec3(0.0, 0.0, 0.0)
+            si = gs.qd_int(-1)
             if i > 0 and cached_id >= 0:
+                # Fast path: reuse cached vertex ID, skip trig + HBM lookup
                 sp, local_sp = func_get_discrete_geom_vertex(
                     geoms_info, verts_info, i_g, pos, quat, cached_id
                 )
                 si = cached_id
             else:
+                # Standard path: full support field lookup
                 sp, local_sp, si = support_driver(
                     geoms_info,
                     verts_info,
