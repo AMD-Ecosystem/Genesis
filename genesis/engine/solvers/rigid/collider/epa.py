@@ -461,8 +461,8 @@ def func_epa_init_polytope_2d(
     flag = EPA_POLY_INIT_RETURN_CODE.SUCCESS
 
     # Get the simplex vertices
-    v1 = gjk_state.simplex_vertex.mink[i_b, 0]
-    v2 = gjk_state.simplex_vertex.mink[i_b, 1]
+    v1 = gjk_state.simplex_vertex.mink[0, i_b]
+    v2 = gjk_state.simplex_vertex.mink[1, i_b]
     diff = v2 - v1
 
     # Find the element in [diff] with the smallest magnitude, because it will give us the largest cross product
@@ -490,13 +490,13 @@ def func_epa_init_polytope_2d(
         vi[i] = func_epa_insert_vertex_to_polytope(
             gjk_state,
             i_b,
-            gjk_state.simplex_vertex.obj1[i_b, i],
-            gjk_state.simplex_vertex.obj2[i_b, i],
-            gjk_state.simplex_vertex.local_obj1[i_b, i],
-            gjk_state.simplex_vertex.local_obj2[i_b, i],
-            gjk_state.simplex_vertex.id1[i_b, i],
-            gjk_state.simplex_vertex.id2[i_b, i],
-            gjk_state.simplex_vertex.mink[i_b, i],
+            gjk_state.simplex_vertex.obj1[i, i_b],
+            gjk_state.simplex_vertex.obj2[i, i_b],
+            gjk_state.simplex_vertex.local_obj1[i, i_b],
+            gjk_state.simplex_vertex.local_obj2[i, i_b],
+            gjk_state.simplex_vertex.id1[i, i_b],
+            gjk_state.simplex_vertex.id2[i, i_b],
+            gjk_state.simplex_vertex.mink[i, i_b],
         )
 
     # Find three more vertices using [d1, d2, d3] as support vectors, and insert them into the polytope
@@ -610,9 +610,9 @@ def func_epa_init_polytope_3d(
     flag = EPA_POLY_INIT_RETURN_CODE.SUCCESS
 
     # Get the simplex vertices
-    v1 = gjk_state.simplex_vertex.mink[i_b, 0]
-    v2 = gjk_state.simplex_vertex.mink[i_b, 1]
-    v3 = gjk_state.simplex_vertex.mink[i_b, 2]
+    v1 = gjk_state.simplex_vertex.mink[0, i_b]
+    v2 = gjk_state.simplex_vertex.mink[1, i_b]
+    v3 = gjk_state.simplex_vertex.mink[2, i_b]
 
     # Get normal; if it is zero, we cannot proceed
     n = (v2 - v1).cross(v3 - v1)
@@ -627,13 +627,13 @@ def func_epa_init_polytope_3d(
         vi[i] = func_epa_insert_vertex_to_polytope(
             gjk_state,
             i_b,
-            gjk_state.simplex_vertex.obj1[i_b, i],
-            gjk_state.simplex_vertex.obj2[i_b, i],
-            gjk_state.simplex_vertex.local_obj1[i_b, i],
-            gjk_state.simplex_vertex.local_obj2[i_b, i],
-            gjk_state.simplex_vertex.id1[i_b, i],
-            gjk_state.simplex_vertex.id2[i_b, i],
-            gjk_state.simplex_vertex.mink[i_b, i],
+            gjk_state.simplex_vertex.obj1[i, i_b],
+            gjk_state.simplex_vertex.obj2[i, i_b],
+            gjk_state.simplex_vertex.local_obj1[i, i_b],
+            gjk_state.simplex_vertex.local_obj2[i, i_b],
+            gjk_state.simplex_vertex.id1[i, i_b],
+            gjk_state.simplex_vertex.id2[i, i_b],
+            gjk_state.simplex_vertex.mink[i, i_b],
         )
 
     # Find the fourth and fifth vertices using the normal
@@ -751,13 +751,13 @@ def func_epa_init_polytope_4d(
         vi[i] = func_epa_insert_vertex_to_polytope(
             gjk_state,
             i_b,
-            gjk_state.simplex_vertex.obj1[i_b, i],
-            gjk_state.simplex_vertex.obj2[i_b, i],
-            gjk_state.simplex_vertex.local_obj1[i_b, i],
-            gjk_state.simplex_vertex.local_obj2[i_b, i],
-            gjk_state.simplex_vertex.id1[i_b, i],
-            gjk_state.simplex_vertex.id2[i_b, i],
-            gjk_state.simplex_vertex.mink[i_b, i],
+            gjk_state.simplex_vertex.obj1[i, i_b],
+            gjk_state.simplex_vertex.obj2[i, i_b],
+            gjk_state.simplex_vertex.local_obj1[i, i_b],
+            gjk_state.simplex_vertex.local_obj2[i, i_b],
+            gjk_state.simplex_vertex.id1[i, i_b],
+            gjk_state.simplex_vertex.id2[i, i_b],
+            gjk_state.simplex_vertex.mink[i, i_b],
         )
 
     # If origin is on any face of the tetrahedron, replace the simplex with a 2-simplex (triangle)
@@ -954,11 +954,11 @@ def func_replace_simplex_3(
             i_v = i_v2
         elif i == 2:
             i_v = i_v3
-        gjk_state.simplex_vertex.obj1[i_b, i] = gjk_state.polytope_verts.obj1[i_b, i_v]
-        gjk_state.simplex_vertex.obj2[i_b, i] = gjk_state.polytope_verts.obj2[i_b, i_v]
-        gjk_state.simplex_vertex.id1[i_b, i] = gjk_state.polytope_verts.id1[i_b, i_v]
-        gjk_state.simplex_vertex.id2[i_b, i] = gjk_state.polytope_verts.id2[i_b, i_v]
-        gjk_state.simplex_vertex.mink[i_b, i] = gjk_state.polytope_verts.mink[i_b, i_v]
+        gjk_state.simplex_vertex.obj1[i, i_b] = gjk_state.polytope_verts.obj1[i_b, i_v]
+        gjk_state.simplex_vertex.obj2[i, i_b] = gjk_state.polytope_verts.obj2[i_b, i_v]
+        gjk_state.simplex_vertex.id1[i, i_b] = gjk_state.polytope_verts.id1[i_b, i_v]
+        gjk_state.simplex_vertex.id2[i, i_b] = gjk_state.polytope_verts.id2[i_b, i_v]
+        gjk_state.simplex_vertex.mink[i, i_b] = gjk_state.polytope_verts.mink[i_b, i_v]
 
     # Reset polytope
     gjk_state.polytope.nverts[i_b] = 0
@@ -1267,13 +1267,13 @@ def func_safe_epa_init(
         vi[i] = func_epa_insert_vertex_to_polytope(
             gjk_state,
             i_b,
-            gjk_state.simplex_vertex.obj1[i_b, i],
-            gjk_state.simplex_vertex.obj2[i_b, i],
-            gjk_state.simplex_vertex.local_obj1[i_b, i],
-            gjk_state.simplex_vertex.local_obj2[i_b, i],
-            gjk_state.simplex_vertex.id1[i_b, i],
-            gjk_state.simplex_vertex.id2[i_b, i],
-            gjk_state.simplex_vertex.mink[i_b, i],
+            gjk_state.simplex_vertex.obj1[i, i_b],
+            gjk_state.simplex_vertex.obj2[i, i_b],
+            gjk_state.simplex_vertex.local_obj1[i, i_b],
+            gjk_state.simplex_vertex.local_obj2[i, i_b],
+            gjk_state.simplex_vertex.id1[i, i_b],
+            gjk_state.simplex_vertex.id2[i, i_b],
+            gjk_state.simplex_vertex.mink[i, i_b],
         )
 
     for i in range(4):

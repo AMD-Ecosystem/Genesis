@@ -1559,7 +1559,7 @@ def func_update_acc_levels_split(
         qd.loop_config(
             name="update_acc_level",
             serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL),
-            block_dim=64,
+            block_dim=128  # OPT: ABD/CRB kernels benefit from wider block,
         )
         for i_l, i_b in qd.ndrange(n_links, _B):
             I_l = [i_l, i_b] if qd.static(static_rigid_sim_config.batch_links_info) else i_l
