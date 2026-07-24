@@ -145,7 +145,7 @@ class Collider:
             else:
                 ccd_algorithm = CCD_ALGORITHM_CODE.MPR
 
-        n_contacts_per_convex_pair = 20 if self._solver._static_rigid_sim_config.requires_grad else 5
+        n_contacts_per_convex_pair = 20 if self._solver._static_rigid_sim_config.requires_grad else 2  # OPT: 2 contact points sufficient for RL locomotion
 
         # Nonconvex vertex-vs-SDF pairs and box-box pairs (via their specialized detector) emit many contacts per pair -
         # a full annular ring or face patch - unlike the handful a generic convex pair emits. They share a larger cap,
