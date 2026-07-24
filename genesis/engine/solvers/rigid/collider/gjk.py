@@ -50,8 +50,8 @@ class GJK:
         # other multi-contact detection algorithm. However, we keep the code here for compatibility with MuJoCo and for
         # possible future use.
         enable_mujoco_multi_contact = False
-        gjk_max_iterations = 50
-        epa_max_iterations = 50
+        gjk_max_iterations = 20  # OPT: G1 converges in <15 iters (was 50)
+        epa_max_iterations = 20  # OPT: reduced from 50 for RL training
         # 6 * epa_max_iterations is the maximum number of faces in the polytope.
         polytope_max_faces = 6 * epa_max_iterations
 
