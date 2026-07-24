@@ -168,7 +168,7 @@ def _kernel_solve_one_iter_amdgpu(
     _B = static_rigid_sim_config.n_envs
     qd.loop_config(
         serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL,
-        block_dim=64,
+        block_dim=128,  # OPT: wider block improves wave utilization vs default 64
     )
     for i_b in range(_B):
         # Same gating rationale as the B3 linesearch kernel: skip work for batches that have
