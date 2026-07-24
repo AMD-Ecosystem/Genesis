@@ -500,7 +500,7 @@ class RigidOptions(Options):
     batch_dofs_info: StrictBool = False
 
     # constraint solver
-    constraint_solver: gs.constraint_solver = gs.constraint_solver.Newton
+    constraint_solver: gs.constraint_solver = gs.constraint_solver.CG  # OPT: CG sufficient for RL, avoids Newton Hessian factorization
     iterations: PositiveInt = 50
     tolerance: PositiveFloat | None = None
     ls_iterations: PositiveInt = 50
