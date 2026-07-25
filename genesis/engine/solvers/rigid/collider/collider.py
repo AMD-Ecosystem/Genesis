@@ -294,7 +294,7 @@ class Collider:
 
         # Contact0 & multicontact scratch states only needed when split narrowphase is active.
         if self._use_split_narrowphase:
-            self._contact0_n_chunks = max(4, math.ceil(gpu_cores / self._solver._B)) if torch.version.hip else max(1, math.ceil(gpu_cores / self._solver._B))  # OPT: AMD contact0 benefits from more parallelism
+            self._contact0_n_chunks = max(8, math.ceil(gpu_cores / self._solver._B)) if torch.version.hip  # OPT: 8 min chunks for better broadphase parallelism else max(1, math.ceil(gpu_cores / self._solver._B))  # OPT: AMD contact0 benefits from more parallelism
             self._contact0_grid_size = self._solver._B * self._contact0_n_chunks
             self._contact0_mpr_state = array_class.get_mpr_state(self._contact0_grid_size)
             self._contact0_gjk_state = array_class.get_gjk_state_contact_only(self._contact0_grid_size)
