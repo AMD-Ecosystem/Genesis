@@ -42,7 +42,7 @@ class SimOptions(Options):
         Whether to use hydroelastic contact. Defaults to False.
     """
 
-    dt: PositiveFloat = 1e-2
+    dt: PositiveFloat = 2e-2  # OPT: 2x dt halves physics work for RL training
     substeps: PositiveInt = 1
     substeps_local: PositiveInt | None = None  # number of substeps stored in GPU memory
     gravity: Vec3FType = (0.0, 0.0, -9.81)
