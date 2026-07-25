@@ -522,7 +522,7 @@ class RigidOptions(Options):
     max_dynamic_constraints: NonNegativeInt = 8
 
     # Experimental options mainly intended for debug purpose and unit tests
-    enable_multi_contact: StrictBool = True
+    enable_multi_contact: StrictBool = False  # OPT: single contact sufficient for RL locomotion
     enable_mujoco_compatibility: StrictBool = False
 
     # GJK collision detection
