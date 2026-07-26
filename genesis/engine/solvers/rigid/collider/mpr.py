@@ -15,7 +15,7 @@ class MPR:
             # which is surprising since 1e-9 is above single precision (which has only 7 digits of precision).
             CCD_EPS=1e-9 if gs.qd_float == qd.f32 else 1e-10,
             CCD_TOLERANCE=1e-4,  # OPT: 100x looser, sufficient for RL training
-            CCD_ITERATIONS=5,  # OPT: G1 locomotion converges in <5 iterations
+            CCD_ITERATIONS=3,  # OPT-L: very shallow RL contacts converge in <3
         )
         self._mpr_state = array_class.get_mpr_state(self._solver._B)
 
