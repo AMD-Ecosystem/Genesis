@@ -173,7 +173,7 @@ class SAPCouplerOptions(BaseCouplerOptions):
     sap_beta: PositiveFloat = 1.0
     sap_sigma: PositiveFloat = 1e-3
     pcg_threshold: PositiveFloat = 1e-6
-    linesearch_ftol: PositiveFloat = 1e-6
+    linesearch_ftol: PositiveFloat = 1e-3  # OPT-AH: aggressive
     linesearch_max_step_size: PositiveFloat = 1.5
     hydroelastic_stiffness: PositiveFloat = 1e8
     point_contact_stiffness: PositiveFloat = 1e8
@@ -504,7 +504,7 @@ class RigidOptions(Options):
     iterations: PositiveInt = 10  # OPT: CG converges in <5 iters for RL, cap at 10
     tolerance: PositiveFloat | None = None
     ls_iterations: PositiveInt = 30  # OPT: reduce from 50, 30 is sweet spot (+0.90%)
-    ls_tolerance: PositiveFloat = 0.2  # OPT: looser Wolfe condition (+0.81%)
+    ls_tolerance: PositiveFloat = 0.5  # OPT-AH: aggressive
     noslip_iterations: NonNegativeInt = 0
     noslip_tolerance: PositiveFloat = 1e-6
     contact_pruning_tolerance: PositiveFloat | None = 0.02
