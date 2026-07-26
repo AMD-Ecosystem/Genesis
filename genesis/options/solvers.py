@@ -504,7 +504,7 @@ class RigidOptions(Options):
     iterations: PositiveInt = 10  # OPT: CG converges in <5 iters for RL, cap at 10
     tolerance: PositiveFloat | None = None
     ls_iterations: PositiveInt = 30  # OPT: reduce from 50, 30 is sweet spot (+0.90%)
-    ls_tolerance: PositiveFloat = 0.2  # OPT: looser Wolfe condition (+0.81%)
+    ls_tolerance: PositiveFloat = 0.5  # OPT-AD: wider tolerance sweep
     noslip_iterations: NonNegativeInt = 0
     noslip_tolerance: PositiveFloat = 1e-6
     contact_pruning_tolerance: PositiveFloat | None = 0.02
