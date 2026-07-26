@@ -174,7 +174,7 @@ class SAPCouplerOptions(BaseCouplerOptions):
     sap_sigma: PositiveFloat = 1e-3
     pcg_threshold: PositiveFloat = 1e-6
     linesearch_ftol: PositiveFloat = 1e-6
-    linesearch_max_step_size: PositiveFloat = 1.5
+    linesearch_max_step_size: PositiveFloat = 3.0  # OPT-AF: larger max step
     hydroelastic_stiffness: PositiveFloat = 1e8
     point_contact_stiffness: PositiveFloat = 1e8
     fem_floor_contact_type: Literal["tet", "vert", "none"] = "tet"
