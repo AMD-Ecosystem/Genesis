@@ -265,6 +265,52 @@ def _func_support_capsule(
 
 
 @qd.func
+def _func_support_cylinder(
+    geoms_info: array_class.GeomsInfo,
+    d,
+    i_g,
+    pos: qd.types.vector(3, dtype=gs.qd_float),
+    quat: qd.types.vector(4, dtype=gs.qd_float),
+):
+    """
+    Analytical support function for CYLINDER geometry.
+
+    A cylinder has radius r, full height h (halflength = h/2), aligned on local Z-axis.
+    The support point in direction d is:
+      - Axial component:  +halflength * sign(d · axis)  along the cylinder axis
+      - Radial component: r * normalize(d - (d · axis) * axis)  in the plane perp to axis
+    If d is parallel to the axis, the radial component is zero (any rim point is equally far).
+
+    geoms_info.data[i_g][0] = radius
+    geoms_info.data[i_g][1] = height (full)
+    """
+    cylinder_center = pos
+    cylinder_radius = geoms_info.data[i_g][0]
+    cylinder_halflength = gs.qd_float(0.5) * geoms_info.data[i_g][1]
+
+    # Cylinder axis in world space (local Z)
+    local_z = qd.Vector([0.0, 0.0, 1.0], dt=gs.qd_float)
+    cylinder_axis = gu.qd_transform_by_quat(local_z, quat)
+
+    # Axial projection: move to top or bottom cap
+    d_dot_axis = d.dot(cylinder_axis)
+    axial_sign = gs.qd_float(1.0) if d_dot_axis >= gs.qd_float(0.0) else gs.qd_float(-1.0)
+    axial_part = cylinder_center + cylinder_halflength * axial_sign * cylinder_axis
+
+    # Radial projection: project d onto plane perpendicular to axis
+    d_radial = d - d_dot_axis * cylinder_axis
+    d_radial_len_sq = d_radial.dot(d_radial)
+    EPS = gs.qd_float(1e-10)
+    if d_radial_len_sq > EPS:
+        d_radial_len = qd.sqrt(d_radial_len_sq)
+        radial_part = cylinder_radius * (d_radial / d_radial_len)
+    else:
+        radial_part = qd.Vector([0.0, 0.0, 0.0], dt=gs.qd_float)
+
+    return axial_part + radial_part
+
+
+@qd.func
 def _func_support_prism(
     collider_state: array_class.ColliderState,
     d,
