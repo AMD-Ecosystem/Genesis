@@ -504,7 +504,7 @@ class RigidOptions(Options):
     iterations: PositiveInt = 9   # OPT: 9 CG iters sufficient (+0.56%)
     tolerance: PositiveFloat | None = None
     ls_iterations: PositiveInt = 30  # OPT: reduce from 50, 30 is sweet spot (+0.90%)
-    ls_tolerance: PositiveFloat = 0.5  # OPT: wider Wolfe condition (+0.48% more)
+    ls_tolerance: PositiveFloat = 1.0  # OPT-AK: very wide Wolfe condition
     noslip_iterations: NonNegativeInt = 0
     noslip_tolerance: PositiveFloat = 1e-6
     contact_pruning_tolerance: PositiveFloat | None = 0.02
