@@ -502,7 +502,7 @@ class RigidOptions(Options):
     # constraint solver
     constraint_solver: gs.constraint_solver = gs.constraint_solver.CG  # OPT: CG sufficient for RL, avoids Newton Hessian factorization
     iterations: PositiveInt = 10  # OPT: CG converges in <5 iters for RL, cap at 10
-    tolerance: PositiveFloat | None = None
+    tolerance: PositiveFloat | None = 1e-1  # OPT-AA: loose CG convergence for RL
     ls_iterations: PositiveInt = 30  # OPT: reduce from 50, 30 is sweet spot (+0.90%)
     ls_tolerance: PositiveFloat = 0.2  # OPT: looser Wolfe condition (+0.81%)
     noslip_iterations: NonNegativeInt = 0
