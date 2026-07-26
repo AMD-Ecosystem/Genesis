@@ -501,7 +501,7 @@ class RigidOptions(Options):
 
     # constraint solver
     constraint_solver: gs.constraint_solver = gs.constraint_solver.CG  # OPT: CG sufficient for RL, avoids Newton Hessian factorization
-    iterations: PositiveInt = 10  # OPT: CG converges in <5 iters for RL, cap at 10
+    iterations: PositiveInt = 5   # OPT-E: test 5 CG iters with contacts=1+no_multicontact
     tolerance: PositiveFloat | None = None
     ls_iterations: PositiveInt = 50
     ls_tolerance: PositiveFloat = 1e-2
