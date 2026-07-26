@@ -507,7 +507,7 @@ class RigidOptions(Options):
     ls_tolerance: PositiveFloat = 0.5  # OPT: wider Wolfe condition (+0.48% more)
     noslip_iterations: NonNegativeInt = 0
     noslip_tolerance: PositiveFloat = 1e-6
-    contact_pruning_tolerance: PositiveFloat | None = 0.02
+    contact_pruning_tolerance: PositiveFloat | None = 0.1  # OPT-AM: aggressive pruning
     sparse_solve: StrictBool = False
     constraint_timeconst: PositiveFloat = 0.01
     use_contact_island: StrictBool = False
