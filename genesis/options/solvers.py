@@ -509,7 +509,7 @@ class RigidOptions(Options):
     noslip_tolerance: PositiveFloat = 1e-6
     contact_pruning_tolerance: PositiveFloat | None = 0.02
     sparse_solve: StrictBool = False
-    constraint_timeconst: PositiveFloat = 0.01
+    constraint_timeconst: PositiveFloat = 0.04  # OPT: set to 2*dt=0.04 explicitly (was silently clipped from 0.01)
     use_contact_island: StrictBool = False
     box_box_detection: StrictBool = False
 
