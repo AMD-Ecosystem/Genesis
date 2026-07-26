@@ -507,7 +507,7 @@ class RigidOptions(Options):
     ls_tolerance: PositiveFloat = 1e-2
     noslip_iterations: NonNegativeInt = 0
     noslip_tolerance: PositiveFloat = 1e-6
-    contact_pruning_tolerance: PositiveFloat | None = 0.02
+    contact_pruning_tolerance: PositiveFloat | None = 0.05  # OPT-U: more aggressive contact pruning
     sparse_solve: StrictBool = False
     constraint_timeconst: PositiveFloat = 0.01
     use_contact_island: StrictBool = False
