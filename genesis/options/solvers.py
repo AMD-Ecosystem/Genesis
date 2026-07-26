@@ -506,6 +506,7 @@ class RigidOptions(Options):
     ls_iterations: PositiveInt = 50
     ls_tolerance: PositiveFloat = 1e-2
     noslip_iterations: NonNegativeInt = 0
+    # OPT-N: frictionloss set to 0 in benchmark via RigidOptions
     noslip_tolerance: PositiveFloat = 1e-6
     contact_pruning_tolerance: PositiveFloat | None = 0.02
     sparse_solve: StrictBool = False
