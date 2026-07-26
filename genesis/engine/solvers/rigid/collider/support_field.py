@@ -298,13 +298,16 @@ def _func_support_cylinder(
     axial_part = cylinder_center + cylinder_halflength * axial_sign * cylinder_axis
 
     # Radial projection: project d onto plane perpendicular to axis
+    # Pre-initialize radial_part (Quadrants requires vars initialized before conditionals)
     d_radial = d - d_dot_axis * cylinder_axis
     d_radial_len_sq = d_radial.dot(d_radial)
     EPS = gs.qd_float(1e-10)
-    if d_radial_len_sq > EPS:
-        d_radial_len = qd.sqrt(d_radial_len_sq)
-        radial_part = cylinder_radius * (d_radial / d_radial_len)
-    else:
+    # Use safe sqrt: if nearly parallel to axis, radial component is negligible
+    d_radial_len = qd.sqrt(qd.max(d_radial_len_sq, EPS))
+    radial_part = cylinder_radius * (d_radial / d_radial_len)
+    # Zero out radial component when direction is parallel to axis (avoids non-zero
+    # result from numerical noise in d_radial when d ≈ axis direction)
+    if d_radial_len_sq <= EPS:
         radial_part = qd.Vector([0.0, 0.0, 0.0], dt=gs.qd_float)
 
     return axial_part + radial_part
