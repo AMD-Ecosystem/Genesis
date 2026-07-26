@@ -3035,8 +3035,8 @@ def kernel_step_1(
     )
 
 
-@qd.kernel(fastcache=gs.use_fastcache, fn_attrs={"amdgpu": {"amdgpu-waves-per-eu": "1,4"}})
-def kernel_step_2(
+@qd.kernel(fastcache=gs.use_fastcache, fn_attrs={"amdgpu": {"amdgpu-waves-per-eu": "2,4"}})
+def kernel_step_2(  # OPT-G: 2,4 vs 1,4 for lighter CG workload
     dofs_state: array_class.DofsState,
     dofs_info: array_class.DofsInfo,
     links_info: array_class.LinksInfo,
