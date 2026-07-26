@@ -190,6 +190,97 @@ def func_plane_box_contact(
                             n_con = n_con + 1
 
 
+
+@qd.func
+def func_plane_cylinder_contact(
+    i_ga,
+    i_gb,
+    i_b,
+    i_pair,
+    geoms_state: array_class.GeomsState,
+    geoms_info: array_class.GeomsInfo,
+    static_rigid_sim_config: qd.template(),
+    collider_state: array_class.ColliderState,
+    collider_info: array_class.ColliderInfo,
+    collider_static_config: qd.template(),
+    errno: qd.Tensor,
+):
+    """
+    Analytical PLANE-CYLINDER contact detection emitting up to 2 contact points.
+
+    For a cylinder resting on a plane, the two deepest rim points of the bottom
+    cap are computed analytically without any vertex mesh scan.
+
+    PLANE is i_ga (type 0), CYLINDER is i_gb (type 3) — sort order guaranteed by caller.
+    geoms_info.data[i_gb][0] = radius, geoms_info.data[i_gb][1] = height (full).
+    """
+    EPS = gs.qd_float(1e-8)
+
+    ga_pos = geoms_state.pos[i_ga, i_b]
+    ga_quat = geoms_state.quat[i_ga, i_b]
+    gb_pos = geoms_state.pos[i_gb, i_b]
+    gb_quat = geoms_state.quat[i_gb, i_b]
+
+    # Plane normal pointing into the cylinder body (upward for floor)
+    plane_dir_local = qd.Vector(
+        [geoms_info.data[i_ga][0], geoms_info.data[i_ga][1], geoms_info.data[i_ga][2]], dt=gs.qd_float
+    )
+    plane_dir = gu.qd_transform_by_quat(plane_dir_local, ga_quat)
+    normal = -plane_dir.normalized()
+
+    # Cylinder geometry
+    cylinder_radius = geoms_info.data[i_gb][0]
+    cylinder_halflength = gs.qd_float(0.5) * geoms_info.data[i_gb][1]
+    local_z = qd.Vector([0.0, 0.0, 1.0], dt=gs.qd_float)
+    cylinder_axis = gu.qd_transform_by_quat(local_z, gb_quat)
+
+    # Choose the bottom cap (closest to plane in direction of normal)
+    n_dot_axis = normal.dot(cylinder_axis)
+    axial_sign = gs.qd_float(1.0) if n_dot_axis >= gs.qd_float(0.0) else gs.qd_float(-1.0)
+    cap_center = gb_pos + cylinder_halflength * axial_sign * cylinder_axis
+
+    # Radial component of normal in the plane perpendicular to cylinder axis
+    n_radial = normal - n_dot_axis * cylinder_axis
+    n_radial_sq = n_radial.dot(n_radial)
+
+    # Pre-initialize contact points (Quadrants requires vars initialized before conditionals)
+    n_radial_len = qd.sqrt(qd.max(n_radial_sq, EPS))
+    n_radial_unit = n_radial / n_radial_len
+
+    # Point 1: cap_center + radius * n_radial_unit
+    # Point 2: cap_center - radius * n_radial_unit
+    pt1 = cap_center + cylinder_radius * n_radial_unit
+    pt2 = cap_center - cylinder_radius * n_radial_unit
+
+    # If axis is nearly parallel to normal, both points collapse to cap_center
+    if n_radial_sq <= EPS:
+        pt1 = cap_center
+        pt2 = cap_center
+
+    # Emit contact for pt1
+    pen1 = normal.dot(pt1 - ga_pos)
+    if pen1 > gs.qd_float(0.0):
+        contact_pos1 = pt1 - gs.qd_float(0.5) * pen1 * normal
+        func_add_contact(
+            i_ga, i_gb, normal, contact_pos1, pen1,
+            i_b, i_pair, geoms_state, geoms_info,
+            collider_state, collider_info, errno,
+        )
+
+    # Emit contact for pt2 (only if different from pt1 and within contact budget)
+    if n_radial_sq > EPS:
+        pen2 = normal.dot(pt2 - ga_pos)
+        if pen2 > gs.qd_float(0.0):
+            if qd.static(collider_static_config.n_contacts_per_convex_pair >= 2):
+                contact_pos2 = pt2 - gs.qd_float(0.5) * pen2 * normal
+                func_add_contact(
+                    i_ga, i_gb, normal, contact_pos2, pen2,
+                    i_b, i_pair, geoms_state, geoms_info,
+                    collider_state, collider_info, errno,
+                )
+
+
+
 @qd.func
 def func_box_box_contact(
     i_ga,

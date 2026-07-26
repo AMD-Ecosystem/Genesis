@@ -18,6 +18,7 @@ from . import capsule_contact, diff_gjk, gjk, mpr
 from .box_contact import (
     func_box_box_contact,
     func_plane_box_contact,
+    func_plane_cylinder_contact,
     func_sphere_box_contact,
 )
 from .contact import (
@@ -2816,6 +2817,21 @@ def func_narrow_phase_convex_specializations(
                     geoms_info,
                     geoms_init_AABB,
                     verts_info,
+                    static_rigid_sim_config,
+                    collider_state,
+                    collider_info,
+                    collider_static_config,
+                    errno,
+                )
+
+            if geoms_info.type[i_ga] == gs.GEOM_TYPE.PLANE and geoms_info.type[i_gb] == gs.GEOM_TYPE.CYLINDER:
+                func_plane_cylinder_contact(
+                    i_ga,
+                    i_gb,
+                    i_b,
+                    i_pair,
+                    geoms_state,
+                    geoms_info,
                     static_rigid_sim_config,
                     collider_state,
                     collider_info,
