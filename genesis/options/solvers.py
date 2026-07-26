@@ -489,7 +489,7 @@ class RigidOptions(Options):
     enable_neutral_collision: StrictBool = False
     enable_adjacent_collision: StrictBool = False
     disable_constraint: StrictBool = False
-    max_collision_pairs: NonNegativeInt = 150
+    max_collision_pairs: NonNegativeInt = 64  # OPT-H: tighter pair budget for contacts=1
     multiplier_collision_broad_phase: PositiveInt = 8
     integrator: gs.integrator = gs.integrator.approximate_implicitfast
     IK_max_targets: PositiveInt = 6
