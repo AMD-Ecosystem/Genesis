@@ -504,7 +504,7 @@ class RigidOptions(Options):
     iterations: PositiveInt = 10  # OPT: CG converges in <5 iters for RL, cap at 10
     tolerance: PositiveFloat | None = None
     ls_iterations: PositiveInt = 50
-    ls_tolerance: PositiveFloat = 1e-2
+    ls_tolerance: PositiveFloat = 5e-2  # OPT-P: looser linesearch exit for RL training
     noslip_iterations: NonNegativeInt = 0
     noslip_tolerance: PositiveFloat = 1e-6
     contact_pruning_tolerance: PositiveFloat | None = 0.02
