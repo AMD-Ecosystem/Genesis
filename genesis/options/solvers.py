@@ -173,7 +173,7 @@ class SAPCouplerOptions(BaseCouplerOptions):
     sap_beta: PositiveFloat = 1.0
     sap_sigma: PositiveFloat = 1e-3
     pcg_threshold: PositiveFloat = 1e-6
-    linesearch_ftol: PositiveFloat = 1e-6
+    linesearch_ftol: PositiveFloat = 1e-3  # OPT-AE: looser Armijo condition
     linesearch_max_step_size: PositiveFloat = 1.5
     hydroelastic_stiffness: PositiveFloat = 1e8
     point_contact_stiffness: PositiveFloat = 1e8
