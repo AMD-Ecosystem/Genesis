@@ -489,8 +489,8 @@ class RigidOptions(Options):
     enable_neutral_collision: StrictBool = False
     enable_adjacent_collision: StrictBool = False
     disable_constraint: StrictBool = False
-    max_collision_pairs: NonNegativeInt = 150
-    multiplier_collision_broad_phase: PositiveInt = 4  # OPT: halve broadphase buffer (+0.58%)
+    max_collision_pairs: NonNegativeInt = 8  # OPT-BC: combined
+    multiplier_collision_broad_phase: PositiveInt = 2  # OPT-BC: combined with small pairs
     integrator: gs.integrator = gs.integrator.approximate_implicitfast
     IK_max_targets: PositiveInt = 6
 
