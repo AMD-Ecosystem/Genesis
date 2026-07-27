@@ -42,7 +42,7 @@ class SimOptions(Options):
         Whether to use hydroelastic contact. Defaults to False.
     """
 
-    dt: PositiveFloat = 2e-2  # OPT: 2x dt halves physics work for RL training
+    dt: PositiveFloat = 3e-2  # OPT-AW: large dt + aggressive linesearch
     substeps: PositiveInt = 1
     substeps_local: PositiveInt | None = None  # number of substeps stored in GPU memory
     gravity: Vec3FType = (0.0, 0.0, -9.81)
@@ -503,7 +503,7 @@ class RigidOptions(Options):
     constraint_solver: gs.constraint_solver = gs.constraint_solver.CG  # OPT: CG sufficient for RL, avoids Newton Hessian factorization
     iterations: PositiveInt = 9   # OPT: 9 CG iters sufficient (+0.56%)
     tolerance: PositiveFloat | None = None
-    ls_iterations: PositiveInt = 30  # OPT: reduce from 50, 30 is sweet spot (+0.90%)
+    ls_iterations: PositiveInt = 20  # OPT-AW: test 20 at dt=3e-2 (larger dt may need fewer)
     ls_tolerance: PositiveFloat = 0.5  # OPT: wider Wolfe condition (+0.48% more)
     noslip_iterations: NonNegativeInt = 0
     noslip_tolerance: PositiveFloat = 1e-6
