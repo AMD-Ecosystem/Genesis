@@ -59,6 +59,7 @@ class integrator(IntEnum):
 class constraint_solver(IntEnum):
     CG = 0
     Newton = 1
+    GS = 2  # Projected Gauss-Seidel — GPU-friendly direct constraint update
 
 
 # rigid solver broadphase traversal strategy
