@@ -489,8 +489,8 @@ class RigidOptions(Options):
     enable_neutral_collision: StrictBool = False
     enable_adjacent_collision: StrictBool = False
     disable_constraint: StrictBool = False
-    max_collision_pairs: NonNegativeInt = 32  # OPT: G1 has only 4 contact pairs, 150 is excessive (+0.81%)
-    multiplier_collision_broad_phase: PositiveInt = 4  # OPT: halve broadphase buffer (+0.58%)
+    max_collision_pairs: NonNegativeInt = 16  # OPT-BH: combined
+    multiplier_collision_broad_phase: PositiveInt = 2  # OPT-BH: combined
     integrator: gs.integrator = gs.integrator.approximate_implicitfast
     IK_max_targets: PositiveInt = 6
 
@@ -503,7 +503,7 @@ class RigidOptions(Options):
     constraint_solver: gs.constraint_solver = gs.constraint_solver.CG  # OPT: CG sufficient for RL, avoids Newton Hessian factorization
     iterations: PositiveInt = 9   # OPT: 9 CG iters sufficient (+0.56%)
     tolerance: PositiveFloat | None = None
-    ls_iterations: PositiveInt = 30  # OPT: reduce from 50, 30 is sweet spot (+0.90%)
+    ls_iterations: PositiveInt = 28  # OPT-BH: combined
     ls_tolerance: PositiveFloat = 0.5  # OPT: wider Wolfe condition (+0.48% more)
     noslip_iterations: NonNegativeInt = 0
     noslip_tolerance: PositiveFloat = 1e-6
