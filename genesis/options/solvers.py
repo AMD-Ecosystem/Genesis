@@ -500,7 +500,7 @@ class RigidOptions(Options):
     batch_dofs_info: StrictBool = False
 
     # constraint solver
-    constraint_solver: gs.constraint_solver = gs.constraint_solver.GS  # OPT-SPARSE-PGS: sparse PGS
+    constraint_solver: gs.constraint_solver = gs.constraint_solver.CG  # OPT: CG sufficient for RL
     iterations: PositiveInt = 9   # OPT: 9 CG iters sufficient (+0.56%)
     tolerance: PositiveFloat | None = None
     ls_iterations: PositiveInt = 30  # OPT: reduce from 50, 30 is sweet spot (+0.90%)

@@ -3000,15 +3000,17 @@ def func_solve_body_tiled_wc_amdgpu(
 # Requires: sparse_solve=True (populates jac_relevant_dofs and jac_n_relevant_dofs)
 
 def _sparse_pgs_is_compatible(*args, **kwargs):
-    """Sparse PGS: AMDGPU + GS solver + sparse_solve=True."""
+    """Sparse PGS: AMDGPU + CG solver + sparse_solve=True (highest priority when sparse)."""
     cfg = kwargs.get("static_rigid_sim_config", args[5] if len(args) >= 6 else None)
     if cfg is None:
         return False
     if gs.backend not in {gs.amdgpu}:
         return False
-    if cfg.solver_type != gs.constraint_solver.GS:
+    if cfg.solver_type != gs.constraint_solver.CG:
         return False
     if not cfg.sparse_solve:
+        return False
+    if cfg.n_envs < 8:
         return False
     return True
 
