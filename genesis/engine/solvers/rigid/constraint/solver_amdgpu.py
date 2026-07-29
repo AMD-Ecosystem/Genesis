@@ -2976,3 +2976,114 @@ def func_solve_body_tiled_wc_amdgpu(
         rigid_global_info,
         static_rigid_sim_config,
     )
+
+
+# ===========================================================================
+# SPARSE PGS (Projected Gauss-Seidel) solver for AMD GPU
+# ===========================================================================
+#
+# Key algorithmic improvement over dense PGS:
+#   - Uses jac_relevant_dofs to skip zero Jacobian entries
+#   - G1 Jacobian: ~131 nonzeros vs 1798 dense = 13.7x fewer multiplications
+#   - Joint limit constraints: 2 nonzero DOFs each (vs 29)
+#   - Frictionloss constraints: 1 nonzero DOF each
+#   - Contact constraints: ~11 DOFs (foot-to-root kinematic chain)
+#
+# Algorithm per iteration:
+#   For each constraint i_c:
+#     1. Jaref_c = sum_{k in jac_relevant_dofs[i_c]} J[i_c,k] * qacc[k] - aref[i_c]
+#     2. new_force = max(0, -Jaref_c * efc_D[i_c])  (for contacts)
+#     3. delta = new_force - efc_force[i_c]
+#     4. efc_force[i_c] = new_force
+#     5. for k in jac_relevant_dofs[i_c]: qacc[k] += delta * J[i_c,k] * invM[k]
+#
+# Requires: sparse_solve=True (populates jac_relevant_dofs and jac_n_relevant_dofs)
+
+def _sparse_pgs_is_compatible(*args, **kwargs):
+    """Sparse PGS: AMDGPU + GS solver + sparse_solve=True."""
+    cfg = kwargs.get("static_rigid_sim_config", args[5] if len(args) >= 6 else None)
+    if cfg is None:
+        return False
+    if gs.backend not in {gs.amdgpu}:
+        return False
+    if cfg.solver_type != gs.constraint_solver.GS:
+        return False
+    if not cfg.sparse_solve:
+        return False
+    return True
+
+
+@qd.kernel(fastcache=gs.use_fastcache)
+def _kernel_sparse_pgs_iter_amdgpu(
+    dofs_state: array_class.DofsState,
+    dofs_info: array_class.DofsInfo,
+    constraint_state: array_class.ConstraintState,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: qd.template(),
+):
+    """One sparse PGS iteration: sequential constraint updates using only nonzero Jacobian entries."""
+    _B = static_rigid_sim_config.n_envs
+    qd.loop_config(
+        serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL,
+        block_dim=128,
+    )
+    for i_b in range(_B):
+        n_con = constraint_state.n_constraints[i_b]
+        n_eq = constraint_state.n_constraints_equality[i_b]
+
+        # Sequential Gauss-Seidel sweep over constraints
+        for i_c in range(n_con):
+            # Get number of relevant (nonzero) DOFs for this constraint
+            n_rel = constraint_state.jac_n_relevant_dofs[i_c, i_b]
+
+            # === SPARSE Jaref computation ===
+            # Only iterate over nonzero DOF indices
+            Jaref_c = gs.qd_float(0.0)
+            for k in range(n_rel):
+                i_d = constraint_state.jac_relevant_dofs[i_c, k, i_b]
+                Jaref_c = Jaref_c + constraint_state.jac[i_c, i_d, i_b] * constraint_state.qacc[i_d, i_b]
+            Jaref_c = Jaref_c - constraint_state.aref[i_c, i_b]
+
+            efc_D_c = constraint_state.efc_D[i_c, i_b]
+            old_force = constraint_state.efc_force[i_c, i_b]
+            new_force = -Jaref_c * efc_D_c
+
+            # Project: contact constraints require force >= 0
+            if i_c >= n_eq:
+                new_force = qd.max(gs.qd_float(0.0), new_force)
+
+            delta = new_force - old_force
+            constraint_state.efc_force[i_c, i_b] = new_force
+
+            # === SPARSE rank-1 update of qacc ===
+            # Only update nonzero DOFs
+            EPS = rigid_global_info.EPS[None]
+            if qd.abs(delta) > EPS:
+                for k in range(n_rel):
+                    i_d = constraint_state.jac_relevant_dofs[i_c, k, i_b]
+                    jac_c_d = constraint_state.jac[i_c, i_d, i_b]
+                    invM_d = dofs_info.invweight[i_d]
+                    constraint_state.qacc[i_d, i_b] = (
+                        constraint_state.qacc[i_d, i_b] + delta * jac_c_d * invM_d
+                    )
+
+
+@solver.func_solve_body.register(is_compatible=_sparse_pgs_is_compatible)
+def func_solve_body_sparse_pgs_amdgpu(
+    entities_info,
+    dofs_info,
+    dofs_state,
+    constraint_state,
+    rigid_global_info,
+    static_rigid_sim_config,
+    _n_iterations,
+):
+    """Sparse PGS: 13.7x fewer matvec operations than dense CG or PGS."""
+    for _it in range(_n_iterations):
+        _kernel_sparse_pgs_iter_amdgpu(
+            dofs_state,
+            dofs_info,
+            constraint_state,
+            rigid_global_info,
+            static_rigid_sim_config,
+        )

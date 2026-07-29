@@ -500,7 +500,7 @@ class RigidOptions(Options):
     batch_dofs_info: StrictBool = False
 
     # constraint solver
-    constraint_solver: gs.constraint_solver = gs.constraint_solver.CG  # OPT: CG sufficient for RL, avoids Newton Hessian factorization
+    constraint_solver: gs.constraint_solver = gs.constraint_solver.GS  # OPT-SPARSE-PGS: sparse PGS
     iterations: PositiveInt = 9   # OPT: 9 CG iters sufficient (+0.56%)
     tolerance: PositiveFloat | None = None
     ls_iterations: PositiveInt = 30  # OPT: reduce from 50, 30 is sweet spot (+0.90%)
@@ -508,7 +508,7 @@ class RigidOptions(Options):
     noslip_iterations: NonNegativeInt = 0
     noslip_tolerance: PositiveFloat = 1e-6
     contact_pruning_tolerance: PositiveFloat | None = 0.05  # OPT: looser pruning (+0.79%)
-    sparse_solve: StrictBool = False
+    sparse_solve: StrictBool = True  # OPT-SPARSE: enables jac_relevant_dofs for sparse matvec
     constraint_timeconst: PositiveFloat = 0.01
     use_contact_island: StrictBool = False
     box_box_detection: StrictBool = False
