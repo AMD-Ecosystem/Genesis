@@ -3023,7 +3023,7 @@ def _kernel_sparse_pgs_iter_amdgpu(
     rigid_global_info: array_class.RigidGlobalInfo,
     static_rigid_sim_config: qd.template(),
 ):
-    """One sparse PGS iteration: sequential constraint updates using only nonzero Jacobian entries."""
+    """PGS with sparse_solve=True compatibility. Dense update for correctness."""
     _B = static_rigid_sim_config.n_envs
     qd.loop_config(
         serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL,
@@ -3032,60 +3032,35 @@ def _kernel_sparse_pgs_iter_amdgpu(
     for i_b in range(_B):
         n_con = constraint_state.n_constraints[i_b]
         n_eq = constraint_state.n_constraints_equality[i_b]
+        n_dofs_full = static_rigid_sim_config.n_dofs_
+        EPS = rigid_global_info.EPS[None]
 
-        # Sequential Gauss-Seidel sweep over constraints
         for i_c in range(n_con):
-            # Get number of relevant (nonzero) DOFs for this constraint
-            n_rel = constraint_state.jac_n_relevant_dofs[i_c, i_b]
-
-            # === SPARSE/DENSE Jaref computation ===
-            # If n_rel > 0: use sparse (only nonzero DOFs)
-            # If n_rel == 0: frictionloss constraints not populated in sparse mode -> use dense
+            # Fully dense Jaref (correct, avoids Quadrants conditional issues)
             Jaref_c = gs.qd_float(0.0)
-            n_dofs_full = static_rigid_sim_config.n_dofs_
-            if n_rel > 0:
-                # SPARSE path: only nonzero DOFs
-                for k in range(n_rel):
-                    i_d = constraint_state.jac_relevant_dofs[i_c, k, i_b]
-                    Jaref_c = Jaref_c + constraint_state.jac[i_c, i_d, i_b] * constraint_state.qacc[i_d, i_b]
-            else:
-                # DENSE fallback: frictionloss (n_rel=0, diagonal Jacobian)
-                for i_d in range(n_dofs_full):
-                    Jaref_c = Jaref_c + constraint_state.jac[i_c, i_d, i_b] * constraint_state.qacc[i_d, i_b]
+            for i_d in range(n_dofs_full):
+                Jaref_c = Jaref_c + constraint_state.jac[i_c, i_d, i_b] * constraint_state.qacc[i_d, i_b]
             Jaref_c = Jaref_c - constraint_state.aref[i_c, i_b]
 
             efc_D_c = constraint_state.efc_D[i_c, i_b]
             old_force = constraint_state.efc_force[i_c, i_b]
             new_force = -Jaref_c * efc_D_c
 
-            # Project: contact constraints require force >= 0
+            # Project contact constraints
             if i_c >= n_eq:
                 new_force = qd.max(gs.qd_float(0.0), new_force)
 
             delta = new_force - old_force
             constraint_state.efc_force[i_c, i_b] = new_force
 
-            # === SPARSE/DENSE rank-1 update of qacc ===
-            EPS = rigid_global_info.EPS[None]
+            # Dense rank-1 qacc update
             if qd.abs(delta) > EPS:
-                if n_rel > 0:
-                    # SPARSE: only nonzero DOFs
-                    for k in range(n_rel):
-                        i_d = constraint_state.jac_relevant_dofs[i_c, k, i_b]
-                        jac_c_d = constraint_state.jac[i_c, i_d, i_b]
-                        invM_d = dofs_info.invweight[i_d]
+                for i_d in range(n_dofs_full):
+                    jac_c_d = constraint_state.jac[i_c, i_d, i_b]
+                    if qd.abs(jac_c_d) > EPS:
                         constraint_state.qacc[i_d, i_b] = (
-                            constraint_state.qacc[i_d, i_b] + delta * jac_c_d * invM_d
+                            constraint_state.qacc[i_d, i_b] + delta * jac_c_d * dofs_info.invweight[i_d]
                         )
-                else:
-                    # DENSE fallback: frictionloss (diagonal Jac, update single DOF)
-                    for i_d in range(n_dofs_full):
-                        jac_c_d = constraint_state.jac[i_c, i_d, i_b]
-                        if qd.abs(jac_c_d) > EPS:
-                            invM_d = dofs_info.invweight[i_d]
-                            constraint_state.qacc[i_d, i_b] = (
-                                constraint_state.qacc[i_d, i_b] + delta * jac_c_d * invM_d
-                            )
 
 
 @solver.func_solve_body.register(is_compatible=_sparse_pgs_is_compatible)
@@ -3098,7 +3073,7 @@ def func_solve_body_sparse_pgs_amdgpu(
     static_rigid_sim_config,
     _n_iterations,
 ):
-    """Sparse PGS: 13.7x fewer matvec operations than dense CG or PGS."""
+    """Dense PGS registered when CG+sparse_solve=True. Correct convergence."""
     for _it in range(_n_iterations):
         _kernel_sparse_pgs_iter_amdgpu(
             dofs_state,
