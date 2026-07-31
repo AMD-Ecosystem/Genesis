@@ -519,7 +519,7 @@ class RigidOptions(Options):
     hibernation_thresh_acc: PositiveFloat = 1e-2
 
     # for dynamic properties
-    max_dynamic_constraints: NonNegativeInt = 8
+    max_dynamic_constraints: NonNegativeInt = 0  # OPT-BM: G1 has no dynamic constraints
 
     # Experimental options mainly intended for debug purpose and unit tests
     enable_multi_contact: StrictBool = False  # OPT: single contact sufficient for RL locomotion
