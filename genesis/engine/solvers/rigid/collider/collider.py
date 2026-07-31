@@ -153,7 +153,7 @@ class Collider:
         # are grouped together for the buffer sizing below. The cap is sized to keep an extended contact patch fully
         # represented: too few points and parts of the patch drop out intermittently as the geometry moves, losing
         # constraint directions and letting bodies slip.
-        n_contacts_per_nonconvex_pair = 40
+        n_contacts_per_nonconvex_pair = 1  # OPT-BN combined
         if self._solver._options.box_box_detection and sum(g.type == gs.GEOM_TYPE.BOX for g in self._solver.geoms) > 1:
             n_contacts_per_nonconvex_pair = max(n_contacts_per_nonconvex_pair, self._box_MAXCONPAIR)
 
