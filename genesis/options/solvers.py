@@ -509,7 +509,7 @@ class RigidOptions(Options):
     noslip_tolerance: PositiveFloat = 1e-6
     contact_pruning_tolerance: PositiveFloat | None = 0.05  # OPT: looser pruning (+0.79%)
     sparse_solve: StrictBool = False
-    constraint_timeconst: PositiveFloat = 0.01
+    constraint_timeconst: PositiveFloat = 0.04  # OPT-BU: explicit soft constraints
     use_contact_island: StrictBool = False
     box_box_detection: StrictBool = False
 
