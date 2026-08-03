@@ -510,7 +510,7 @@ class RigidOptions(Options):
     contact_pruning_tolerance: PositiveFloat | None = 0.05  # OPT: looser pruning (+0.79%)
     sparse_solve: StrictBool = False
     constraint_timeconst: PositiveFloat = 0.01
-    use_contact_island: StrictBool = True  # OPT-BQ: skip idle contact islands
+    use_contact_island: StrictBool = False  # OPT-BQ: keep False (conflicts with pruning=0.05)
     box_box_detection: StrictBool = False
 
     # hibernation threshold
