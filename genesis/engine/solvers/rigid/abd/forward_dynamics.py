@@ -319,7 +319,7 @@ def func_compute_mass_matrix_lds(
 
     # LDS-optimized GPU implementation using a fixed block size and the
     # configured per-entity tiled DoF bound.
-    BLOCK_DIM = qd.static(64)
+    BLOCK_DIM = qd.static(128)  # OPT-BZ: wider WG (LDS sized by n_dofs=29, not BLOCK_DIM)
     MAX_DOFS_PER_ENTITY = qd.static(static_rigid_sim_config.tiled_n_dofs_per_entity)
 
     n_entities = static_rigid_sim_config.n_entities_
