@@ -505,7 +505,7 @@ class RigidOptions(Options):
     tolerance: PositiveFloat | None = None
     ls_iterations: PositiveInt = 30  # OPT: reduce from 50, 30 is sweet spot (+0.90%)
     ls_tolerance: PositiveFloat = 0.5  # OPT: wider Wolfe condition (+0.48% more)
-    noslip_iterations: NonNegativeInt = 0
+    noslip_iterations: NonNegativeInt = 2  # OPT-BT: test post-solve friction
     noslip_tolerance: PositiveFloat = 1e-6
     contact_pruning_tolerance: PositiveFloat | None = 0.05  # OPT: looser pruning (+0.79%)
     sparse_solve: StrictBool = False
