@@ -673,7 +673,7 @@ def func_fk_levels_split(
         qd.loop_config(
             name="fk_level",
             serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL),
-            block_dim=64,
+            block_dim=128,  # OPT: wider WG, same pattern as update_acc_levels_split
         )
         for i_l, i_b in qd.ndrange(n_links, _B):
             I_l = [i_l, i_b] if qd.static(static_rigid_sim_config.batch_links_info) else i_l
