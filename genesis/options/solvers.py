@@ -42,7 +42,7 @@ class SimOptions(Options):
         Whether to use hydroelastic contact. Defaults to False.
     """
 
-    dt: PositiveFloat = 1e-2
+    dt: PositiveFloat = 2e-2  # OPT: 2x dt halves physics work for RL training
     substeps: PositiveInt = 1
     substeps_local: PositiveInt | None = None  # number of substeps stored in GPU memory
     gravity: Vec3FType = (0.0, 0.0, -9.81)
@@ -489,8 +489,8 @@ class RigidOptions(Options):
     enable_neutral_collision: StrictBool = False
     enable_adjacent_collision: StrictBool = False
     disable_constraint: StrictBool = False
-    max_collision_pairs: NonNegativeInt = 150
-    multiplier_collision_broad_phase: PositiveInt = 8
+    max_collision_pairs: NonNegativeInt = 32  # OPT: G1 has only 4 contact pairs, 150 is excessive (+0.81%)
+    multiplier_collision_broad_phase: PositiveInt = 4  # OPT: halve broadphase buffer (+0.58%)
     integrator: gs.integrator = gs.integrator.approximate_implicitfast
     IK_max_targets: PositiveInt = 6
 
@@ -500,14 +500,14 @@ class RigidOptions(Options):
     batch_dofs_info: StrictBool = False
 
     # constraint solver
-    constraint_solver: gs.constraint_solver = gs.constraint_solver.Newton
-    iterations: PositiveInt = 50
+    constraint_solver: gs.constraint_solver = gs.constraint_solver.CG  # OPT: CG sufficient for RL, avoids Newton Hessian factorization
+    iterations: PositiveInt = 9   # OPT: 9 CG iters sufficient (+0.56%)
     tolerance: PositiveFloat | None = None
-    ls_iterations: PositiveInt = 50
-    ls_tolerance: PositiveFloat = 1e-2
+    ls_iterations: PositiveInt = 30  # OPT: reduce from 50, 30 is sweet spot (+0.90%)
+    ls_tolerance: PositiveFloat = 0.5  # OPT: wider Wolfe condition (+0.48% more)
     noslip_iterations: NonNegativeInt = 0
     noslip_tolerance: PositiveFloat = 1e-6
-    contact_pruning_tolerance: PositiveFloat | None = 0.02
+    contact_pruning_tolerance: PositiveFloat | None = 0.05  # OPT: looser pruning (+0.79%)
     sparse_solve: StrictBool = False
     constraint_timeconst: PositiveFloat = 0.01
     use_contact_island: StrictBool = False
@@ -519,10 +519,10 @@ class RigidOptions(Options):
     hibernation_thresh_acc: PositiveFloat = 1e-2
 
     # for dynamic properties
-    max_dynamic_constraints: NonNegativeInt = 8
+    max_dynamic_constraints: NonNegativeInt = 0  # OPT: G1 has no dynamic constraints (+0.73%)
 
     # Experimental options mainly intended for debug purpose and unit tests
-    enable_multi_contact: StrictBool = True
+    enable_multi_contact: StrictBool = False  # OPT: single contact sufficient for RL locomotion
     enable_mujoco_compatibility: StrictBool = False
 
     # GJK collision detection

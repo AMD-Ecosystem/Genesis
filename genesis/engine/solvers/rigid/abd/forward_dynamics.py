@@ -319,7 +319,7 @@ def func_compute_mass_matrix_lds(
 
     # LDS-optimized GPU implementation using a fixed block size and the
     # configured per-entity tiled DoF bound.
-    BLOCK_DIM = qd.static(64)
+    BLOCK_DIM = qd.static(128)  # OPT: wider WG for mass matrix (LDS sized by n_dofs, not BLOCK_DIM)
     MAX_DOFS_PER_ENTITY = qd.static(static_rigid_sim_config.tiled_n_dofs_per_entity)
 
     n_entities = static_rigid_sim_config.n_entities_
@@ -449,16 +449,13 @@ def func_compute_mass_matrix_lds(
 
             # Apply masking and store lower triangle
             # (global_pair_idx == i_d_*(i_d_+1)/2 + j_d_ = packed index)
-            val = mass_mat_local[global_pair_idx] * rigid_global_info.mass_parent_mask[i_d_global, j_d_global]
-            rigid_global_info.mass_mat[i_b, i_d_global, j_d_global] = val
-
-            # Inline upper-triangle mirror for off-diagonal entries — eliminates
-            # the separate mirror-pass loop + block.sync that follows this write phase.
-            # Upper entry M[j,i] mirrors M[i,j] = val (symmetric matrix).
-            # mask[j,i] is NOT used here because the upper entry equals the already-masked
-            # lower value; applying mask[j,i] (which may be 0) would incorrectly zero it.
-            if i_d_ != j_d_:
-                rigid_global_info.mass_mat[i_b, j_d_global, i_d_global] = val
+            # OPT: skip compute+write for zero-mask pairs (~47% of G1 lower-triangle)
+            mask_val = rigid_global_info.mass_parent_mask[i_d_global, j_d_global]
+            if mask_val != 0.0:
+                val = mass_mat_local[global_pair_idx] * mask_val
+                rigid_global_info.mass_mat[i_b, i_d_global, j_d_global] = val
+                if i_d_ != j_d_:
+                    rigid_global_info.mass_mat[i_b, j_d_global, i_d_global] = val
 
             global_pair_idx += BLOCK_DIM
 
@@ -1559,7 +1556,7 @@ def func_update_acc_levels_split(
         qd.loop_config(
             name="update_acc_level",
             serialize=qd.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL),
-            block_dim=64,
+            block_dim=128  # OPT: ABD/CRB kernels benefit from wider block,
         )
         for i_l, i_b in qd.ndrange(n_links, _B):
             I_l = [i_l, i_b] if qd.static(static_rigid_sim_config.batch_links_info) else i_l

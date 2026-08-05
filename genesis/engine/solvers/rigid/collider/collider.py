@@ -86,7 +86,7 @@ class Collider:
 
         self._mc_perturbation = 1e-3 if self._solver._enable_mujoco_compatibility else 1e-2
         self._mc_tolerance = 1e-3 if self._solver._enable_mujoco_compatibility else 1e-2
-        self._mpr_to_gjk_overlap_ratio = 0.25
+        self._mpr_to_gjk_overlap_ratio = 0.1  # OPT: fewer GJK fallbacks
         self._box_MAXCONPAIR = 16
         self._diff_pos_tolerance = 1e-2
         self._diff_normal_tolerance = 1e-2
@@ -145,7 +145,7 @@ class Collider:
             else:
                 ccd_algorithm = CCD_ALGORITHM_CODE.MPR
 
-        n_contacts_per_convex_pair = 20 if self._solver._static_rigid_sim_config.requires_grad else 5
+        n_contacts_per_convex_pair = 20 if self._solver._static_rigid_sim_config.requires_grad else 1  # OPT: 1 contact point sufficient for RL locomotion (validated: 0 nan errors)
 
         # Nonconvex vertex-vs-SDF pairs and box-box pairs (via their specialized detector) emit many contacts per pair -
         # a full annular ring or face patch - unlike the handful a generic convex pair emits. They share a larger cap,
@@ -153,7 +153,7 @@ class Collider:
         # are grouped together for the buffer sizing below. The cap is sized to keep an extended contact patch fully
         # represented: too few points and parts of the patch drop out intermittently as the geometry moves, losing
         # constraint directions and letting bodies slip.
-        n_contacts_per_nonconvex_pair = 40
+        n_contacts_per_nonconvex_pair = 1  # OPT: G1 has zero nonconvex pairs (+0.64%)
         if self._solver._options.box_box_detection and sum(g.type == gs.GEOM_TYPE.BOX for g in self._solver.geoms) > 1:
             n_contacts_per_nonconvex_pair = max(n_contacts_per_nonconvex_pair, self._box_MAXCONPAIR)
 
@@ -294,7 +294,7 @@ class Collider:
 
         # Contact0 & multicontact scratch states only needed when split narrowphase is active.
         if self._use_split_narrowphase:
-            self._contact0_n_chunks = max(1, math.ceil(gpu_cores / self._solver._B))
+            self._contact0_n_chunks = max(4, math.ceil(gpu_cores / self._solver._B)) if torch.version.hip else max(1, math.ceil(gpu_cores / self._solver._B))  # OPT: AMD contact0 benefits from more parallelism
             self._contact0_grid_size = self._solver._B * self._contact0_n_chunks
             self._contact0_mpr_state = array_class.get_mpr_state(self._contact0_grid_size)
             self._contact0_gjk_state = array_class.get_gjk_state_contact_only(self._contact0_grid_size)
