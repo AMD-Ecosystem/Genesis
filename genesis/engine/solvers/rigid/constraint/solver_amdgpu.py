@@ -673,7 +673,7 @@ def _func_ls_pt_3a_wc(
     a single 9-slot LDS array.
     """
     BLOCK_DIM = qd.static(64)
-    pt3_red = qd.simt.block.SharedArray((9, BLOCK_DIM), gs.qd_float)
+    pt3_red = qd.simt.block.SharedArray((BLOCK_DIM, 9), gs.qd_float)  # OPT-CC: bank-conflict fix
     pt3_bcast = qd.simt.block.SharedArray((9,), gs.qd_float)
 
     ne = constraint_state.n_constraints_equality[i_b]
@@ -766,15 +766,15 @@ def _func_ls_pt_3a_wc(
         t2_2 = t2_2 + qf_2 * act2
         i_c = i_c + BLOCK_DIM
 
-    pt3_red[0, tid] = t0_0
-    pt3_red[1, tid] = t0_1
-    pt3_red[2, tid] = t0_2
-    pt3_red[3, tid] = t1_0
-    pt3_red[4, tid] = t1_1
-    pt3_red[5, tid] = t1_2
-    pt3_red[6, tid] = t2_0
-    pt3_red[7, tid] = t2_1
-    pt3_red[8, tid] = t2_2
+    pt3_red[tid, 0] = t0_0
+    pt3_red[tid, 1] = t0_1
+    pt3_red[tid, 2] = t0_2
+    pt3_red[tid, 3] = t1_0
+    pt3_red[tid, 4] = t1_1
+    pt3_red[tid, 5] = t1_2
+    pt3_red[tid, 6] = t2_0
+    pt3_red[tid, 7] = t2_1
+    pt3_red[tid, 8] = t2_2
     qd.simt.block.sync()
     if tid == 0:
         s00 = base_0
@@ -787,15 +787,15 @@ def _func_ls_pt_3a_wc(
         s21 = base_1
         s22 = base_2
         for k in qd.static(range(BLOCK_DIM)):
-            s00 = s00 + pt3_red[0, k]
-            s01 = s01 + pt3_red[1, k]
-            s02 = s02 + pt3_red[2, k]
-            s10 = s10 + pt3_red[3, k]
-            s11 = s11 + pt3_red[4, k]
-            s12 = s12 + pt3_red[5, k]
-            s20 = s20 + pt3_red[6, k]
-            s21 = s21 + pt3_red[7, k]
-            s22 = s22 + pt3_red[8, k]
+            s00 = s00 + pt3_red[k, 0]
+            s01 = s01 + pt3_red[k, 1]
+            s02 = s02 + pt3_red[k, 2]
+            s10 = s10 + pt3_red[k, 3]
+            s11 = s11 + pt3_red[k, 4]
+            s12 = s12 + pt3_red[k, 5]
+            s20 = s20 + pt3_red[k, 6]
+            s21 = s21 + pt3_red[k, 7]
+            s22 = s22 + pt3_red[k, 8]
         EPS = rigid_global_info.EPS[None]
         c0 = alpha_0 * alpha_0 * s02 + alpha_0 * s01 + s00
         g0 = 2 * alpha_0 * s02 + s01
@@ -2113,7 +2113,7 @@ def _func_ls_pt_3a_twc(
     BLOCK_DIM = qd.static(_TWC_BLOCK_DIM)
     COOP = qd.static(_TWC_COOP_FACTOR)
     ENVS = qd.static(_TWC_ENVS_PER_BLOCK)
-    pt3_red = qd.simt.block.SharedArray((9, BLOCK_DIM), gs.qd_float)
+    pt3_red = qd.simt.block.SharedArray((BLOCK_DIM, 9), gs.qd_float)  # OPT-CC: bank-conflict fix
     pt3_bcast = qd.simt.block.SharedArray((ENVS, 9), gs.qd_float)
 
     env_in_block = tid // COOP
@@ -2209,15 +2209,15 @@ def _func_ls_pt_3a_twc(
         t2_2 = t2_2 + qf_2 * act2
         i_c = i_c + COOP
 
-    pt3_red[0, tid] = t0_0
-    pt3_red[1, tid] = t0_1
-    pt3_red[2, tid] = t0_2
-    pt3_red[3, tid] = t1_0
-    pt3_red[4, tid] = t1_1
-    pt3_red[5, tid] = t1_2
-    pt3_red[6, tid] = t2_0
-    pt3_red[7, tid] = t2_1
-    pt3_red[8, tid] = t2_2
+    pt3_red[tid, 0] = t0_0
+    pt3_red[tid, 1] = t0_1
+    pt3_red[tid, 2] = t0_2
+    pt3_red[tid, 3] = t1_0
+    pt3_red[tid, 4] = t1_1
+    pt3_red[tid, 5] = t1_2
+    pt3_red[tid, 6] = t2_0
+    pt3_red[tid, 7] = t2_1
+    pt3_red[tid, 8] = t2_2
     qd.simt.block.sync()
     if lane_in_env == 0:
         s00 = base_0
@@ -2231,15 +2231,15 @@ def _func_ls_pt_3a_twc(
         s22 = base_2
         base = env_in_block * COOP
         for k in qd.static(range(COOP)):
-            s00 = s00 + pt3_red[0, base + k]
-            s01 = s01 + pt3_red[1, base + k]
-            s02 = s02 + pt3_red[2, base + k]
-            s10 = s10 + pt3_red[3, base + k]
-            s11 = s11 + pt3_red[4, base + k]
-            s12 = s12 + pt3_red[5, base + k]
-            s20 = s20 + pt3_red[6, base + k]
-            s21 = s21 + pt3_red[7, base + k]
-            s22 = s22 + pt3_red[8, base + k]
+            s00 = s00 + pt3_red[base + k, 0]
+            s01 = s01 + pt3_red[base + k, 1]
+            s02 = s02 + pt3_red[base + k, 2]
+            s10 = s10 + pt3_red[base + k, 3]
+            s11 = s11 + pt3_red[base + k, 4]
+            s12 = s12 + pt3_red[base + k, 5]
+            s20 = s20 + pt3_red[base + k, 6]
+            s21 = s21 + pt3_red[base + k, 7]
+            s22 = s22 + pt3_red[base + k, 8]
         EPS = rigid_global_info.EPS[None]
         c0 = alpha_0 * alpha_0 * s02 + alpha_0 * s01 + s00
         g0 = 2 * alpha_0 * s02 + s01
