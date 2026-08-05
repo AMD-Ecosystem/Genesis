@@ -449,16 +449,13 @@ def func_compute_mass_matrix_lds(
 
             # Apply masking and store lower triangle
             # (global_pair_idx == i_d_*(i_d_+1)/2 + j_d_ = packed index)
-            val = mass_mat_local[global_pair_idx] * rigid_global_info.mass_parent_mask[i_d_global, j_d_global]
-            rigid_global_info.mass_mat[i_b, i_d_global, j_d_global] = val
-
-            # Inline upper-triangle mirror for off-diagonal entries — eliminates
-            # the separate mirror-pass loop + block.sync that follows this write phase.
-            # Upper entry M[j,i] mirrors M[i,j] = val (symmetric matrix).
-            # mask[j,i] is NOT used here because the upper entry equals the already-masked
-            # lower value; applying mask[j,i] (which may be 0) would incorrectly zero it.
-            if i_d_ != j_d_:
-                rigid_global_info.mass_mat[i_b, j_d_global, i_d_global] = val
+            # OPT: skip compute+write for zero-mask pairs (~47% of G1 lower-triangle)
+            mask_val = rigid_global_info.mass_parent_mask[i_d_global, j_d_global]
+            if mask_val != 0.0:
+                val = mass_mat_local[global_pair_idx] * mask_val
+                rigid_global_info.mass_mat[i_b, i_d_global, j_d_global] = val
+                if i_d_ != j_d_:
+                    rigid_global_info.mass_mat[i_b, j_d_global, i_d_global] = val
 
             global_pair_idx += BLOCK_DIM
 
