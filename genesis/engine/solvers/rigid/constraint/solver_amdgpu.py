@@ -1890,7 +1890,7 @@ def _func_ls_init_p0_twc(
     my_qg2 = gs.qd_float(0.0)
     i_d = lane_in_env
     while i_d < n_dofs:
-        s = constraint_state.search[i_d, i_b]
+        s = search_lds[env_in_block, i_d]  # OPT-CB: reuse LDS cache (avoid HBM re-read)
         Ma_d = constraint_state.Ma[i_d, i_b]
         f_d = dofs_state.force[i_d, i_b]
         mv_d = constraint_state.mv[i_d, i_b]
