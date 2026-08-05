@@ -2496,7 +2496,7 @@ def func_linesearch_batch_tiled_wc(
     return res_alpha
 
 
-@qd.kernel(fastcache=gs.use_fastcache)
+@qd.kernel(fastcache=gs.use_fastcache, fn_attrs={"amdgpu": {"amdgpu-waves-per-eu": "2,4"}})  # OPT-CA: match wavecoop occupancy hint
 def _kernel_solve_body_tiled_wc_amdgpu(
     entities_info: array_class.EntitiesInfo,
     dofs_state: array_class.DofsState,
