@@ -2395,18 +2395,19 @@ def func_linesearch_batch_tiled_wc(
                     alpha_2 = (p1_alpha + p2_alpha) * 0.5
                     p3_done = False
                     while ls_it < rigid_global_info.ls_iterations[None]:
-                        c0, g0, h0, c1, g1, h1, c2, g2, h2, ls_it = _func_ls_pt_3a_twc(
-                            i_b,
-                            tid,
-                            alpha_0,
-                            alpha_1,
-                            alpha_2,
-                            base_0,
-                            base_1,
-                            base_2,
-                            ls_it,
-                            constraint_state,
-                            rigid_global_info,
+                        # OPT-CD: 3 sequential single-alpha calls instead of 1 triple-alpha call
+                        # Reduces peak VGPR from 9 accumulators to 3, eliminating potential spilling
+                        _, c0, g0, h0, ls_it = _func_ls_pt_opt_twc(
+                            i_b, tid, alpha_0, base_0, base_1, base_2, ls_it,
+                            constraint_state, rigid_global_info,
+                        )
+                        _, c1, g1, h1, ls_it = _func_ls_pt_opt_twc(
+                            i_b, tid, alpha_1, base_0, base_1, base_2, ls_it,
+                            constraint_state, rigid_global_info,
+                        )
+                        _, c2, g2, h2, ls_it = _func_ls_pt_opt_twc(
+                            i_b, tid, alpha_2, base_0, base_1, base_2, ls_it,
+                            constraint_state, rigid_global_info,
                         )
 
                         best_alpha = gs.qd_float(0.0)
