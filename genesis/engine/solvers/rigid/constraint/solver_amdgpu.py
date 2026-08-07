@@ -1119,7 +1119,8 @@ def func_linesearch_batch_wavecoop(
             p2_deriv_0 = p1_deriv_0
             p2_deriv_1 = p1_deriv_1
             phase2_break = False
-            while p1_deriv_0 * direction <= -gtol and ls_it < rigid_global_info.ls_iterations[None]:
+            ls_it_phase2_start = ls_it  # OPT-CE: cap Phase-2 bracketing at 8 iters
+            while p1_deriv_0 * direction <= -gtol and ls_it < rigid_global_info.ls_iterations[None] and ls_it < ls_it_phase2_start + 8:
                 p2_alpha = p1_alpha
                 p2_cost = p1_cost
                 p2_deriv_0 = p1_deriv_0
@@ -2354,7 +2355,8 @@ def func_linesearch_batch_tiled_wc(
             p2_deriv_0 = p1_deriv_0
             p2_deriv_1 = p1_deriv_1
             phase2_break = False
-            while p1_deriv_0 * direction <= -gtol and ls_it < rigid_global_info.ls_iterations[None]:
+            ls_it_phase2_start = ls_it  # OPT-CE: cap Phase-2 bracketing at 8 iters
+            while p1_deriv_0 * direction <= -gtol and ls_it < rigid_global_info.ls_iterations[None] and ls_it < ls_it_phase2_start + 8:
                 p2_alpha = p1_alpha
                 p2_cost = p1_cost
                 p2_deriv_0 = p1_deriv_0
