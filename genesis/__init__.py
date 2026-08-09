@@ -64,7 +64,7 @@ def init(
     eps=1e-15,
     theme="dark",
     logger_verbose_time=False,
-    performance_mode=False,
+    performance_mode=True,
 ):
     global _initialized
     if _initialized:
