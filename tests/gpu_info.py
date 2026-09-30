@@ -103,6 +103,25 @@ class NvidiaBackend(GpuBackend):
         return usage
 
 
+def _uuid_aliases(device_uuid: str) -> set[str]:
+    """Return comparable forms of one GPU identifier.
+
+    AMD SMI exposes both a device UUID and a HIP UUID (``GPU-`` plus 16 hex digits).
+    PyTorch stringifies that HIP UUID by hex-encoding those 16 ASCII characters, so
+    ``31313362-6631-3831-3766-636266613962`` is the same id as ``GPU-113bf1817fcbfa9b``.
+    """
+    bare = device_uuid.strip().lower().removeprefix("gpu-").replace("-", "")
+    aliases = {bare} if bare else set()
+    if len(bare) == 32:
+        try:
+            decoded = bytes.fromhex(bare).decode("ascii").replace("-", "").removeprefix("gpu-")
+        except (ValueError, UnicodeDecodeError):
+            decoded = ""
+        if decoded and all(char in "0123456789abcdef" for char in decoded):
+            aliases.add(decoded)
+    return aliases
+
+
 class AmdBackend(GpuBackend):
     """AMD backend backed by AMD SMI (amdsmi), the management library shipped with ROCm."""
 
@@ -140,10 +159,15 @@ class AmdBackend(GpuBackend):
         )
 
     def get_device_index_from_uuid(self, device_uuid: str) -> int:
-        target = device_uuid.replace("-", "").lower()
+        target = _uuid_aliases(device_uuid)
         for index, handle in enumerate(self._handles):
-            uuid = self._amdsmi.amdsmi_get_gpu_device_uuid(handle)
-            if uuid.replace("-", "").lower() == target:
+            candidates = _uuid_aliases(self._amdsmi.amdsmi_get_gpu_device_uuid(handle))
+            try:
+                hip_uuid = self._amdsmi.amdsmi_get_gpu_enumeration_info(handle).get("hip_uuid", "")
+            except self._amdsmi.AmdSmiException:
+                hip_uuid = ""
+            candidates.update(_uuid_aliases(hip_uuid))
+            if target & candidates:
                 return index
         return -1
 

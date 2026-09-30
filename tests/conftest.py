@@ -196,8 +196,10 @@ def pytest_cmdline_main(config: pytest.Config) -> None:
     if not show_viewer:
         os.environ["GS_HEADLESS"] = "1"
 
-    # Make sure that the number of workers is not too large if specified
-    if isinstance(config.option.numprocesses, int):
+    # Make sure that the number of workers is not too large if specified. A serial run does not
+    # need the homogeneous-GPU worker estimate, which cannot be computed when the machine also
+    # exposes a smaller display GPU beside the compute device.
+    if isinstance(config.option.numprocesses, int) and config.option.numprocesses > 0:
         max_workers = max(pytest_xdist_auto_num_workers(config), 1)
         if config.option.numprocesses > max_workers:
             raise ValueError(f"The number of workers cannot exceed '{max_workers}' on this machine.")
