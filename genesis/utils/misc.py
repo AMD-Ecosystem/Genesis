@@ -274,7 +274,11 @@ def get_gpu_shared_tile_sizes(max_n_sizes: int) -> tuple[int, ...]:
         # blocks, and the driver reserves the shared memory of a compute unit beyond what one block may opt in to.
         device_property = torch.cuda.get_device_properties(torch.cuda.current_device())
         unit_bytes = device_property.shared_memory_per_multiprocessor
-        reserved_bytes = max(unit_bytes - device_property.shared_memory_per_block_optin, 0)
+        # ROCm PyTorch builds expose shared_memory_per_block and not the CUDA opt-in field.
+        optin_bytes = getattr(
+            device_property, "shared_memory_per_block_optin", device_property.shared_memory_per_block
+        )
+        reserved_bytes = max(unit_bytes - optin_bytes, 0)
         max_blocks = device_property.max_threads_per_multi_processor // device_property.warp_size
         if not torch.version.hip:
             # FIXME: torch exposes no cap on the resident blocks of a streaming multiprocessor, which NVIDIA sets per
