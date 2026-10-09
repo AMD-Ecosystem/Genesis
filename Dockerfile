@@ -82,7 +82,7 @@ COPY pyproject.toml /tmp/genesis-pyproject.toml
 RUN python -c 'import tomllib; from pathlib import Path; \
 data = tomllib.loads(Path("/tmp/genesis-pyproject.toml").read_text()); \
 deps = data["project"]["dependencies"] + data["project"]["optional-dependencies"]["dev"]; \
-kept = [dep for dep in deps if dep.split("[", 1)[0].split(";", 1)[0].strip().lower().replace("_", "-") != "quadrants"]; \
+kept = [dep for dep in deps if __import__("re").match(r"([A-Za-z0-9][A-Za-z0-9._-]*)", dep.split(";", 1)[0].strip()).group(1).lower().replace("_", "-") != "quadrants"]; \
 Path("/tmp/genesis-reqs.txt").write_text("\n".join(kept) + "\n")'
 
 RUN pip install --index-url https://stable.repo.amd.com/rocm/whl-next/ \
@@ -101,6 +101,11 @@ RUN sed -i 's/qd.simt.subgroup.inclusive_add(value)/qd.simt.subgroup.inclusive_a
         genesis/utils/simt.py \
     && grep -q 'inclusive_add_tiled(value, 5)' genesis/utils/simt.py \
     && pip install --no-deps -e /src/Genesis
+
+# The runtime image runs the Quadrants suites from this tree. Drop the build
+# outputs so the copy below keeps the sources the tests open and not the
+# compiler work directory.
+RUN rm -rf /src/quadrants/build /src/quadrants/dist
 
 
 FROM ${ROCM_IMAGE}
@@ -136,7 +141,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=build /opt/venv /opt/venv
 COPY --from=build /src/Genesis /src/Genesis
 COPY --from=build /opt/quadrants/quadrants_cpp_tests /opt/quadrants/quadrants_cpp_tests
-COPY --from=build /src/quadrants/tests /src/quadrants/tests
+COPY --from=build /src/quadrants /src/quadrants
 COPY docker/sitecustomize.py /opt/debug-runtime/sitecustomize.py
 
 # Quadrants dlopens "libamdhip64.so". Point that name at the ROCm runtime
