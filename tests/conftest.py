@@ -233,7 +233,7 @@ def pytest_sessionstart(session: pytest.Session) -> None:
             # FIXME: Enabling multi-threading in benchmark is making compile time estimation unreliable
             num_cpu_per_worker = "1"
         else:
-            physical_core_count = psutil.cpu_count(logical=config.option.logical)
+            physical_core_count = _get_core_count(config.option.logical)
             num_workers = int(os.environ["PYTEST_XDIST_WORKER_COUNT"])
             num_cpu_per_worker = str(max(int(physical_core_count / num_workers), 1))
         os.environ["QD_NUM_THREADS"] = num_cpu_per_worker
@@ -248,6 +248,22 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     # Must be set before numba is imported, so it cannot live in a fixture.
     basetemp = config._tmp_path_factory.getbasetemp()
     os.environ["NUMBA_CACHE_DIR"] = str(basetemp / "numba-cache")
+
+
+def _get_core_count(logical):
+    """Return the number of cores the process may run on, logical or physical.
+
+    A job scheduler or a container grants the process a share of the machine through its CPU affinity, which bounds the
+    cores it may use below those of the machine.
+    """
+    core_count = psutil.cpu_count(logical=logical)
+    # The CPU affinity of a process is not exposed on macOS
+    if sys.platform != "darwin":
+        n_cpus_allowed = len(psutil.Process().cpu_affinity())
+        if not logical:
+            n_cpus_allowed = max(n_cpus_allowed * core_count // psutil.cpu_count(logical=True), 1)
+        core_count = min(core_count, n_cpus_allowed)
+    return core_count
 
 
 def _get_gpu_indices():
@@ -331,8 +347,12 @@ def _get_egl_index(gpu_index):
 
 def pytest_xdist_auto_num_workers(config):
     # Get available memory (RAM & VRAM) and number of cores
-    physical_core_count = psutil.cpu_count(logical=config.option.logical)
+    physical_core_count = _get_core_count(config.option.logical)
     ram_memory = psutil.virtual_memory().total / 1024**3
+    # A job scheduler or a container also caps the memory of the process below that of the machine (Linux cgroup v2)
+    cgroup_memory_max = Path("/sys/fs/cgroup/memory.max")
+    if cgroup_memory_max.exists() and (memory_max := cgroup_memory_max.read_text().strip()) != "max":
+        ram_memory = min(ram_memory, int(memory_max) / 1024**3)
     if sys.platform == "darwin":
         # On Apple ARM, cpu and gpu are part of the same physical device with unified memory
         num_gpus = 1
@@ -556,6 +576,16 @@ def backend(pytestconfig):
 @pytest.fixture(scope="session")
 def asset_tmp_path(tmp_path_factory):
     return tmp_path_factory.mktemp("assets")
+
+
+@pytest.fixture
+def caplog(caplog):
+    # The genesis logger keeps its records from propagating to the root logger, so that they are never printed twice.
+    # The handler of the fixture therefore has to sit on it directly.
+    logger = logging.getLogger("genesis")
+    logger.addHandler(caplog.handler)
+    yield caplog
+    logger.removeHandler(caplog.handler)
 
 
 @pytest.fixture
@@ -835,9 +865,10 @@ def initialize_genesis(
         gs.init(
             backend=backend,
             precision=precision,
+            logging_level=logging_level,
             debug=debug,
             seed=0,
-            logging_level=logging_level,
+            theme="raw",
             performance_mode=performance_mode,
             use_deterministic_algorithms=use_deterministic_algorithms,
         )

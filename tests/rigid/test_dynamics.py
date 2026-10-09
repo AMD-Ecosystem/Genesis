@@ -1082,6 +1082,7 @@ def test_cholesky_tiling(monkeypatch, tol):
 
             rigid_solver_build_orig(self)
             self.rigid_config.enable_tiled_cholesky_mass_matrix = enable_tiled_cholesky
+            self.rigid_config.enable_fused_smooth_acc_solve &= enable_tiled_cholesky
             if enable_tiled_cholesky:
                 self.rigid_config.tiled_n_dofs_per_entity = 32
 
@@ -1185,11 +1186,13 @@ def test_solve_arm_equivalence(monkeypatch, show_viewer, tol):
     )
 
     accelerations = []
+    warmstarts = []
 
     def solve_compared(*args):
         nonlocal selected
         inputs = [qd_to_numpy(tensor, copy=True) for tensor in solve_inputs]
         accelerations.clear()
+        warmstarts[:] = inputs[:1]
         # The candidate order is fixed, so solving with index 0 last leaves the trajectory to one implementation.
         for selected in (1, 0):
             for tensor, value in zip(solve_inputs, inputs):
@@ -1199,13 +1202,19 @@ def test_solve_arm_equivalence(monkeypatch, show_viewer, tol):
 
     monkeypatch.setattr("genesis.engine.solvers.rigid.rigid_solver.func_solve_body", solve_compared)
 
+    # Every box is pushed and twisted by a new random wrench each step, a fraction of what tips or slides it, so that no
+    # solve starts from a warm start that already resolves it: resting boxes would leave both implementations returning
+    # that common warm start untouched.
+    dofs_force_scale = np.tile((1.0, 1.0, 1.0, 0.02, 0.02, 0.02), len(positions))
     for i_step in range(N_STEPS):
+        solver.control_dofs_force(np.random.uniform(-1.0, 1.0, size=(2, solver.n_dofs)) * dofs_force_scale)
         scene.step()
         assert not solver.get_error_envs_mask().any()
         # Neither implementation may be compared on a solve that had nothing to resolve
         assert (qd_to_numpy(constraint_state.n_constraints) > 32).all()
 
         compared, reference = accelerations
+        assert not np.allclose(reference, *warmstarts, rtol=0.0, atol=tol)
         # The two implementations spread every reduction, factor and solve differently, so their accelerations land
         # within rounding of each other and never on the same value: a gap of exactly zero means one of them ran twice.
         assert np.abs(compared.astype(np.float64) - reference.astype(np.float64)).max() > 0.0
@@ -1227,21 +1236,21 @@ def test_cholesky_tiling_large_shared_memory(show_viewer):
     if max_shared_mem <= 49152:
         pytest.skip("GPU does not support opt-in shared memory beyond the default 48kB")
 
-    # Stack 17 free boxes (6 DOFs each = 102 total) to exceed the default 48kB tiling limit of 96 DOFs for f32
+    # Stack 19 free boxes (6 DOFs each = 114 total) to exceed the default 48kB tiling limit of 110 DOFs for f32
     scene = gs.Scene(
         rigid_options=gs.options.RigidOptions(
             constraint_solver=gs.constraint_solver.Newton,
             sparse_solve=False,
         ),
         viewer_options=gs.options.ViewerOptions(
-            camera_pos=(1.5, 1.0, 2.5),
-            camera_lookat=(0.0, 0.0, 1.2),
+            camera_pos=(2.5, 1.7, 3.0),
+            camera_lookat=(0.0, 0.0, 1.7),
         ),
         show_viewer=show_viewer,
         show_FPS=False,
     )
     scene.add_entity(gs.morphs.Plane())
-    for i in range(17):
+    for i in range(19):
         scene.add_entity(
             gs.morphs.Box(
                 size=(0.1, 0.1, 0.1),
@@ -1250,8 +1259,8 @@ def test_cholesky_tiling_large_shared_memory(show_viewer):
         )
     scene.build(n_envs=2)
 
-    assert scene.rigid_solver.n_dofs == 102
-    assert scene.rigid_solver.rigid_config.island_tile_cap_last == 128
+    assert scene.rigid_solver.n_dofs == 114
+    assert scene.rigid_solver.rigid_config.island_tile_cap_last >= 114
 
     scene.step()
     assert not scene.rigid_solver.get_error_envs_mask().any()

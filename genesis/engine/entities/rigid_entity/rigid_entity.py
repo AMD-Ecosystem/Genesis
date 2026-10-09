@@ -1403,36 +1403,6 @@ class KinematicEntity(Entity):
         """The base joint of the entity"""
         return self._joints[0][0]
 
-    @property
-    @gs.assert_built
-    def q_limit(self):
-        """The build-time positional limits of the entity's generalised coordinates, lower row then upper row.
-
-        A joint holding its orientation as a quaternion, a free or a ball joint, contributes the unit bounds of that
-        quaternion, which is normalized rather than limited.
-        """
-        return self._q_limit
-
-    def _init_q_limit(self):
-        q_limit_lower, q_limit_upper = [], []
-        for joint in self.joints:
-            if joint.type in (gs.JOINT_TYPE.FREE, gs.JOINT_TYPE.SPHERICAL):
-                # A quaternion takes four of the coordinates of such a joint; whatever remains is a translation,
-                # carried by the first of its degrees of freedom.
-                n_translation = joint.n_qs - 4
-                q_limit_lower += [joint.desc.dofs_limit[:n_translation, 0], -np.ones(4)]
-                q_limit_upper += [joint.desc.dofs_limit[:n_translation, 1], np.ones(4)]
-            elif joint.type != gs.JOINT_TYPE.FIXED:
-                q_limit_lower.append(joint.desc.dofs_limit[:, 0])
-                q_limit_upper.append(joint.desc.dofs_limit[:, 1])
-        if not q_limit_lower:
-            # An entity that no degree of freedom moves holds no coordinate, hence a limit of width zero.
-            self._q_limit = np.zeros((2, self.n_qs), dtype=gs.np_float)
-            return
-        self._q_limit = np.stack(
-            (np.concatenate(q_limit_lower), np.concatenate(q_limit_upper)), axis=0, dtype=gs.np_float
-        )
-
     # ------------------------------------------------------------------------------------
     # --------------------------------- Jacobian & IK ------------------------------------
     # ------------------------------------------------------------------------------------
@@ -1996,8 +1966,6 @@ class RigidEntity(KinematicEntity):
         self._n_free_verts = len(self._free_verts_idx_local)
         self._n_fixed_verts = len(self._fixed_verts_idx_local)
 
-        self._init_q_limit()
-
     def _add_equality(self, desc: RigidEqualityDescription):
         match desc.type:
             case gs.EQUALITY_TYPE.CONNECT | gs.EQUALITY_TYPE.WELD:
@@ -2208,7 +2176,8 @@ class RigidEntity(KinematicEntity):
             aabb_min = torch.full((n_envs, 3), float("inf"), dtype=gs.tc_float, device=gs.device)
             aabb_max = torch.full((n_envs, 3), float("-inf"), dtype=gs.tc_float, device=gs.device)
             for geom in self.geoms:
-                geom_aabb = geom.get_AABB()
+                # See RigidLink.get_AABB
+                geom_aabb = geom.get_AABB().expand((self._solver.n_envs, 2, 3))
                 active_mask = geom.active_envs_mask[envs_idx] if geom.active_envs_mask is not None else ()
                 aabb_min[active_mask] = torch.minimum(aabb_min[active_mask], geom_aabb[envs_idx[active_mask], 0])
                 aabb_max[active_mask] = torch.maximum(aabb_max[active_mask], geom_aabb[envs_idx[active_mask], 1])

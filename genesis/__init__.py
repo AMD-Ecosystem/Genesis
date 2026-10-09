@@ -65,7 +65,7 @@ def init(
     theme="dark",
     logger_verbose_time=False,
     performance_mode=False,
-    use_deterministic_algorithms=False,
+    use_deterministic_algorithms=None,
 ):
     global _initialized
     if _initialized:
@@ -143,7 +143,10 @@ def init(
     use_zerocopy = bool(_use_zerocopy)
 
     # Reproducing a rollout means settling the runtime-measured choices the simulation would otherwise keep revisiting
-    # (see prefer_decomposed_solver in rigid_solver.py), at the cost of the throughput they were buying, hence opt-in.
+    # (see prefer_decomposed_solver in rigid_solver.py), at the cost of the throughput they were buying. If None, it is
+    # resolved from the array mode: disabled in performance mode (static arrays), enabled otherwise.
+    if use_deterministic_algorithms is None:
+        use_deterministic_algorithms = _use_ndarray
     globals()["use_deterministic_algorithms"] = use_deterministic_algorithms
     globals()["debug"] = debug
 
@@ -191,12 +194,6 @@ def init(
     qd_ivec2 = qd.types.vector(2, qd_int)
     qd_ivec3 = qd.types.vector(3, qd_int)
     qd_ivec4 = qd.types.vector(4, qd_int)
-
-    if use_deterministic_algorithms:
-        # TorchScript profiles the first calls of a scripted function unfused, then compiles a fused kernel whose
-        # contracted arithmetic rounds differently, so a getter built on one returns different bits for the same state
-        # depending on how many times it has run. With no fused specialization allowed, every call runs unfused.
-        torch.jit.set_fusion_strategy([("STATIC", 0), ("DYNAMIC", 0)])
 
     # Define smallest float that is considered non-zero
     global EPS

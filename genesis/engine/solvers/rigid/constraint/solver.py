@@ -853,32 +853,36 @@ def _add_collision_constraints_per_friction(
 
     Per-friction threading: rows_per_contact times more threads than the legacy path; adjacent lanes vary the
     friction slot i_col_ * rows_per_contact + i_friction so within a warp adjacent threads write adjacent n_con
-    values. Under the flipped jac layout (_B, n_dofs, n_constraints), n_con is stride-1, so jac writes coalesce.
+    values. Under the flipped jac layout (_B, n_dofs, n_constraints), n_con is stride-1, so jac writes coalesce. One
+    block per env strides the rows of its live contacts, an env holding a small share of the contact capacity.
     """
     _B = dyn_state.dofs.ctrl_mode.shape[1]
-    max_candidate_contacts = collider_state.contact_data.link_a.shape[0]
     rows_per_contact = qd.static(rigid_config.rows_per_contact)
+    BLOCK_DIM = qd.static(32)
 
-    qd.loop_config(name="add_collision_constraints", serialize=rigid_config.para_level < gs.PARA_LEVEL.PARTIAL)
-    for flat_idx in range(_B * max_candidate_contacts * rows_per_contact):
-        slot = flat_idx % (max_candidate_contacts * rows_per_contact)
-        i_b = flat_idx // (max_candidate_contacts * rows_per_contact)
-        i_col_ = slot // rows_per_contact
-        i_friction = slot % rows_per_contact
-        # i_col_ counts the live contacts, the ones after the kept contacts of the sleepers (see n_contacts_hibernated
-        # in array_class.py), and numbers the row group
-        if i_col_ < collider_state.n_contacts[i_b] - collider_state.n_contacts_hibernated[i_b]:
-            _add_friction_constraint(
-                i_b,
-                i_col_,
-                i_friction,
-                dyn_state,
-                collider_state,
-                constraint_state,
-                dyn_info,
-                rigid_info,
-                rigid_config,
-            )
+    qd.loop_config(name="add_collision_constraints", block_dim=BLOCK_DIM)
+    for i_flat in range(_B * BLOCK_DIM):
+        tid = i_flat % BLOCK_DIM
+        i_b = i_flat // BLOCK_DIM
+        # The live contacts are the ones after the kept contacts of the sleepers (see n_contacts_hibernated in
+        # array_class.py), i_col_ counting them and numbering the row group
+        n_rows = (collider_state.n_contacts[i_b] - collider_state.n_contacts_hibernated[i_b]) * rows_per_contact
+        for i_chunk_ in range((n_rows + BLOCK_DIM - 1) // BLOCK_DIM):
+            slot = i_chunk_ * BLOCK_DIM + tid
+            if slot < n_rows:
+                i_col_ = slot // rows_per_contact
+                i_friction = slot % rows_per_contact
+                _add_friction_constraint(
+                    i_b,
+                    i_col_,
+                    i_friction,
+                    dyn_state,
+                    collider_state,
+                    constraint_state,
+                    dyn_info,
+                    rigid_info,
+                    rigid_config,
+                )
 
 
 @qd.func
@@ -1444,7 +1448,7 @@ def _sort_contacts_and_build_islands(
                 func_build_islands_coop(
                     i_b, tid, dyn_state, collider_state, constraint_state, dyn_info, rigid_info, rigid_config
                 )
-            if qd.static(collider_static_config.spatial_sort_supported):
+            if qd.static(collider_static_config.has_non_box_plane_convex_convex):
                 qd.simt.block.sync()
                 func_sort_contacts_coop(i_b, tid, dyn_state, collider_state, constraint_state)
                 qd.simt.block.sync()
@@ -1471,7 +1475,7 @@ def _sort_contacts_and_build_islands(
                         )
             else:
                 func_build_islands(i_b, dyn_state, collider_state, constraint_state, dyn_info, rigid_info, rigid_config)
-            if qd.static(collider_static_config.spatial_sort_supported):
+            if qd.static(collider_static_config.has_non_box_plane_convex_convex):
                 func_sort_contacts(
                     i_b,
                     collider_state.n_contacts_hibernated[i_b],
@@ -1787,6 +1791,69 @@ def func_equality_weld(
 
 
 @qd.func
+def _func_joint_limit_gap(
+    i_j: int, i_b: int, dyn_info: array_class.DynInfo, rigid_info: array_class.RigidInfo, rigid_config: qd.template()
+):
+    """Return the dof of a joint and its distances to the lower and upper limits, positive within them.
+
+    A joint other than revolute or prismatic is reported within its limits.
+    """
+    I_j = [i_j, i_b] if qd.static(rigid_config.batch_joints_info) else i_j
+    i_d = dyn_info.joints.dof_start[I_j]
+    pos_delta_min = gs.qd_float(1.0)
+    pos_delta_max = gs.qd_float(1.0)
+    if dyn_info.joints.type[I_j] == gs.JOINT_TYPE.REVOLUTE or dyn_info.joints.type[I_j] == gs.JOINT_TYPE.PRISMATIC:
+        i_q = dyn_info.joints.q_start[I_j]
+        I_d = [i_d, i_b] if qd.static(rigid_config.batch_dofs_info) else i_d
+        pos_delta_min = rigid_info.qpos[i_q, i_b] - dyn_info.dofs.limit[I_d][0]
+        pos_delta_max = dyn_info.dofs.limit[I_d][1] - rigid_info.qpos[i_q, i_b]
+    return i_d, pos_delta_min, pos_delta_max
+
+
+@qd.func
+def _func_add_joint_limit_row(
+    i_con: int,
+    i_j: int,
+    i_d: int,
+    i_b: int,
+    pos_delta_min: float,
+    pos_delta_max: float,
+    dyn_state: array_class.DynState,
+    constraint_state: array_class.ConstraintState,
+    dyn_info: array_class.DynInfo,
+    rigid_info: array_class.RigidInfo,
+    rigid_config: qd.template(),
+):
+    """Write row i_con of the constraint system for the joint i_j past one of its limits."""
+    EPS = rigid_info.EPS[None]
+    n_dofs = dyn_state.dofs.ctrl_mode.shape[0]
+    I_j = [i_j, i_b] if qd.static(rigid_config.batch_joints_info) else i_j
+    I_d = [i_d, i_b] if qd.static(rigid_config.batch_dofs_info) else i_d
+
+    pos_delta = qd.min(pos_delta_min, pos_delta_max)
+    jac = (pos_delta_min < pos_delta_max) * 2 - 1
+    jac_qvel = jac * dyn_state.dofs.vel[i_d, i_b]
+    imp, aref = gu.imp_aref(dyn_info.joints.sol_params[I_j], pos_delta, jac_qvel, pos_delta)
+    diag = qd.max(dyn_info.dofs.invweight[I_d] * (1 - imp) / imp, EPS)
+
+    constraint_state.diag[i_con, i_b] = diag
+    constraint_state.aref[i_con, i_b] = aref
+    constraint_state.efc_D[i_con, i_b] = 1 / diag
+
+    if qd.static(rigid_config.sparse_solve):
+        for i_d2_ in range(constraint_state.jac_n_dofs[i_con, i_b]):
+            i_d2 = constraint_state.jac_dofs_idx[i_con, i_d2_, i_b]
+            constraint_state.jac[i_con, i_d2, i_b] = gs.qd_float(0.0)
+    else:
+        for i_d2 in range(n_dofs):
+            constraint_state.jac[i_con, i_d2, i_b] = gs.qd_float(0.0)
+    constraint_state.jac[i_con, i_d, i_b] = jac
+
+    constraint_state.jac_n_dofs[i_con, i_b] = 1
+    constraint_state.jac_dofs_idx[i_con, 0, i_b] = i_d
+
+
+@qd.func
 def add_joint_limit_constraints(
     dyn_state: array_class.DynState,
     constraint_state: array_class.ConstraintState,
@@ -1794,54 +1861,74 @@ def add_joint_limit_constraints(
     rigid_info: array_class.RigidInfo,
     rigid_config: qd.template(),
 ):
-    EPS = rigid_info.EPS[None]
-
     _B = constraint_state.jac.shape[2]
     n_links = dyn_info.links.root_idx.shape[0]
-    n_dofs = dyn_state.dofs.ctrl_mode.shape[0]
 
-    # TODO: sparse mode
-    qd.loop_config(name="add_joint_limit_constraints", serialize=qd.static(rigid_config.para_level < gs.PARA_LEVEL.ALL))
-    for i_b in range(_B):
-        for i_l in range(n_links):
-            I_l = [i_l, i_b] if qd.static(rigid_config.batch_links_info) else i_l
-
-            for i_j in range(dyn_info.links.joint_start[I_l], dyn_info.links.joint_end[I_l]):
-                I_j = [i_j, i_b] if qd.static(rigid_config.batch_joints_info) else i_j
-
-                if (
-                    dyn_info.joints.type[I_j] == gs.JOINT_TYPE.REVOLUTE
-                    or dyn_info.joints.type[I_j] == gs.JOINT_TYPE.PRISMATIC
-                ):
-                    i_q = dyn_info.joints.q_start[I_j]
-                    i_d = dyn_info.joints.dof_start[I_j]
-                    I_d = [i_d, i_b] if qd.static(rigid_config.batch_dofs_info) else i_d
-                    pos_delta_min = rigid_info.qpos[i_q, i_b] - dyn_info.dofs.limit[I_d][0]
-                    pos_delta_max = dyn_info.dofs.limit[I_d][1] - rigid_info.qpos[i_q, i_b]
-                    pos_delta = qd.min(pos_delta_min, pos_delta_max)
-
-                    if pos_delta < 0:
-                        jac = (pos_delta_min < pos_delta_max) * 2 - 1
-                        jac_qvel = jac * dyn_state.dofs.vel[i_d, i_b]
-                        imp, aref = gu.imp_aref(dyn_info.joints.sol_params[I_j], pos_delta, jac_qvel, pos_delta)
-                        diag = qd.max(dyn_info.dofs.invweight[I_d] * (1 - imp) / imp, EPS)
-
-                        n_con = qd.atomic_add(constraint_state.n_constraints[i_b], 1)
-                        constraint_state.diag[n_con, i_b] = diag
-                        constraint_state.aref[n_con, i_b] = aref
-                        constraint_state.efc_D[n_con, i_b] = 1 / diag
-
-                        if qd.static(rigid_config.sparse_solve):
-                            for i_d2_ in range(constraint_state.jac_n_dofs[n_con, i_b]):
-                                i_d2 = constraint_state.jac_dofs_idx[n_con, i_d2_, i_b]
-                                constraint_state.jac[n_con, i_d2, i_b] = gs.qd_float(0.0)
-                        else:
-                            for i_d2 in range(n_dofs):
-                                constraint_state.jac[n_con, i_d2, i_b] = gs.qd_float(0.0)
-                        constraint_state.jac[n_con, i_d, i_b] = jac
-
-                        constraint_state.jac_n_dofs[n_con, i_b] = 1
-                        constraint_state.jac_dofs_idx[n_con, 0, i_b] = i_d
+    # On the cooperative path, one block per env takes 32 joints at a time, and a prefix sum over the lanes numbers the
+    # rows of the joints at their limit in joint order, the order of the serial walk over links below.
+    if qd.static(rigid_config.enable_cooperative_constraint_kernels):
+        BLOCK_DIM = qd.static(32)
+        n_joints = dyn_info.joints.type.shape[0]
+        qd.loop_config(name="add_joint_limit_constraints", block_dim=BLOCK_DIM)
+        for i_flat in range(_B * BLOCK_DIM):
+            tid = i_flat % BLOCK_DIM
+            i_b = i_flat // BLOCK_DIM
+            i_con_start = constraint_state.n_constraints[i_b]
+            for i_chunk_ in range((n_joints + BLOCK_DIM - 1) // BLOCK_DIM):
+                i_j = i_chunk_ * BLOCK_DIM + tid
+                i_d = 0
+                pos_delta_min = gs.qd_float(1.0)
+                pos_delta_max = gs.qd_float(1.0)
+                if i_j < n_joints:
+                    i_d, pos_delta_min, pos_delta_max = _func_joint_limit_gap(
+                        i_j, i_b, dyn_info, rigid_info, rigid_config
+                    )
+                is_at_limit = qd.min(pos_delta_min, pos_delta_max) < 0
+                n_rows_incl, n_rows_chunk = su.qd_block_scan(qd.cast(is_at_limit, gs.qd_int))
+                if is_at_limit:
+                    _func_add_joint_limit_row(
+                        i_con_start + n_rows_incl - 1,
+                        i_j,
+                        i_d,
+                        i_b,
+                        pos_delta_min,
+                        pos_delta_max,
+                        dyn_state,
+                        constraint_state,
+                        dyn_info,
+                        rigid_info,
+                        rigid_config,
+                    )
+                i_con_start = i_con_start + n_rows_chunk
+            if tid == 0:
+                constraint_state.n_constraints[i_b] = i_con_start
+    else:
+        # TODO: sparse mode
+        qd.loop_config(
+            name="add_joint_limit_constraints", serialize=qd.static(rigid_config.para_level < gs.PARA_LEVEL.ALL)
+        )
+        for i_b in range(_B):
+            for i_l in range(n_links):
+                I_l = [i_l, i_b] if qd.static(rigid_config.batch_links_info) else i_l
+                for i_j in range(dyn_info.links.joint_start[I_l], dyn_info.links.joint_end[I_l]):
+                    i_d, pos_delta_min, pos_delta_max = _func_joint_limit_gap(
+                        i_j, i_b, dyn_info, rigid_info, rigid_config
+                    )
+                    if qd.min(pos_delta_min, pos_delta_max) < 0:
+                        i_con = qd.atomic_add(constraint_state.n_constraints[i_b], 1)
+                        _func_add_joint_limit_row(
+                            i_con,
+                            i_j,
+                            i_d,
+                            i_b,
+                            pos_delta_min,
+                            pos_delta_max,
+                            dyn_state,
+                            constraint_state,
+                            dyn_info,
+                            rigid_info,
+                            rigid_config,
+                        )
 
 
 @qd.func
@@ -2536,7 +2623,6 @@ def func_island_assemble_factor_solve_tiled(
     i_island: int,
     tid: int,
     sh_L,
-    sh_v,
     constraint_state: array_class.ConstraintState,
     dyn_info: array_class.DynInfo,
     rigid_info: array_class.RigidInfo,
@@ -2653,49 +2739,53 @@ def func_island_assemble_factor_solve_tiled(
             sh_L[k_blk_lo:k_blk_hi, k_blk_lo:k_blk_hi] = L_kk
 
         # --- Triangular solve grad -> Mgrad from sh_L (local indices; grad/Mgrad global through dof_id) ---
-        i_d_local = tid
-        while i_d_local < n:
-            i_d = i_d_local
-            if qd.static(not rigid_config.is_single_island):
-                i_d = constraint_state.island.dof_id[dof_base + i_d_local, i_b]
-            sh_v[i_d_local] = constraint_state.grad[i_d, i_b]
-            # L factors the scaled block, so the solve wraps with nt_jacobi (see array_class.py).
-            if qd.static(rigid_config.enable_jacobi_equilibration):
-                sh_v[i_d_local] = sh_v[i_d_local] * constraint_state.nt_jacobi[i_d, i_b]
-            i_d_local = i_d_local + T
+        # Column-oriented substitutions on registers: lane tid holds rows tid + k * T of the vector, the lane owning row
+        # j solves it and broadcasts it, and every lane removes its contribution from the rows it holds. A step costs
+        # one broadcast and one multiply-add per row held, the substitutions being latency-bound at this size.
+        N_ROWS_PER_LANE = qd.static((max_dofs + T - 1) // T)
+        v = qd.Vector.zero(gs.qd_float, N_ROWS_PER_LANE)
+        for k in qd.static(range(N_ROWS_PER_LANE)):
+            i_d_local = k * T + tid
+            if i_d_local < n:
+                i_d = i_d_local
+                if qd.static(not rigid_config.is_single_island):
+                    i_d = constraint_state.island.dof_id[dof_base + i_d_local, i_b]
+                v[k] = constraint_state.grad[i_d, i_b]
+                # L factors the scaled block, so the solve wraps with nt_jacobi (see array_class.py).
+                if qd.static(rigid_config.enable_jacobi_equilibration):
+                    v[k] = v[k] * constraint_state.nt_jacobi[i_d, i_b]
+        # The substitutions read rows of sh_L the factor wrote from other lanes
         qd.simt.block.sync()
-        for i_r in range(n):
-            dot = gs.qd_float(0.0)
-            j_d_local = tid
-            while j_d_local < i_r:
-                dot = dot + sh_L[i_r, j_d_local] * sh_v[j_d_local]
-                j_d_local = j_d_local + T
-            dot = su.qd_block_sum(dot, LOG2_T)
-            if tid == 0:
-                sh_v[i_r] = (sh_v[i_r] - dot) / sh_L[i_r, i_r]
-            qd.simt.block.sync()
-        for i_rev in range(n):
-            i_r = n - 1 - i_rev
-            dot = gs.qd_float(0.0)
-            j_d_local = i_r + 1 + tid
-            while j_d_local < n:
-                dot = dot + sh_L[j_d_local, i_r] * sh_v[j_d_local]
-                j_d_local = j_d_local + T
-            dot = su.qd_block_sum(dot, LOG2_T)
-            if tid == 0:
-                sh_v[i_r] = (sh_v[i_r] - dot) / sh_L[i_r, i_r]
-            qd.simt.block.sync()
+        # Forward substitution L y = grad, then backward substitution L^T x = y, the direction resolved at compile time
+        # so that each step carries a single update.
+        for i_pass in qd.static(range(2)):
+            for j_step in range(n):
+                j_d_local = j_step
+                if qd.static(i_pass == 1):
+                    j_d_local = n - 1 - j_step
+                x_j = su.qd_lane_vector_get(v, j_d_local, T) / sh_L[j_d_local, j_d_local]
+                for k in qd.static(range(N_ROWS_PER_LANE)):
+                    i_d_local = k * T + tid
+                    if i_d_local == j_d_local:
+                        v[k] = x_j
+                    else:
+                        if qd.static(i_pass == 0):
+                            if j_d_local < i_d_local and i_d_local < n:
+                                v[k] = v[k] - sh_L[i_d_local, j_d_local] * x_j
+                        else:
+                            if i_d_local < j_d_local:
+                                v[k] = v[k] - sh_L[j_d_local, i_d_local] * x_j
 
-        # Write the solved Mgrad back to global memory (local sh_v -> global through dof_id)
-        i_d_local = tid
-        while i_d_local < n:
-            i_d = i_d_local
-            if qd.static(not rigid_config.is_single_island):
-                i_d = constraint_state.island.dof_id[dof_base + i_d_local, i_b]
-            constraint_state.Mgrad[i_d, i_b] = sh_v[i_d_local]
-            if qd.static(rigid_config.enable_jacobi_equilibration):
-                constraint_state.Mgrad[i_d, i_b] = sh_v[i_d_local] * constraint_state.nt_jacobi[i_d, i_b]
-            i_d_local = i_d_local + T
+        # Write the solved Mgrad back to global memory (local registers -> global through dof_id)
+        for k in qd.static(range(N_ROWS_PER_LANE)):
+            i_d_local = k * T + tid
+            if i_d_local < n:
+                i_d = i_d_local
+                if qd.static(not rigid_config.is_single_island):
+                    i_d = constraint_state.island.dof_id[dof_base + i_d_local, i_b]
+                constraint_state.Mgrad[i_d, i_b] = v[k]
+                if qd.static(rigid_config.enable_jacobi_equilibration):
+                    constraint_state.Mgrad[i_d, i_b] = v[k] * constraint_state.nt_jacobi[i_d, i_b]
         qd.simt.block.sync()
 
         # Persist the factor: store L's lower triangle (local sh_L) at the island's global dof rows and columns of
@@ -3235,7 +3325,6 @@ def func_island_tiled_factor_solve_all(
                 i_work = i_flat // T
                 tid = i_flat % T
                 sh_L = qd.simt.block.SharedArray((MAX_DOFS, MAX_DOFS + 1), gs.qd_float)
-                sh_v = qd.simt.block.SharedArray((MAX_DOFS,), gs.qd_float)
                 if i_work < n_work:
                     i_b = i_work
                     i_island = 0
@@ -3251,7 +3340,6 @@ def func_island_tiled_factor_solve_all(
                                 i_island,
                                 tid,
                                 sh_L,
-                                sh_v,
                                 constraint_state,
                                 dyn_info,
                                 rigid_info,
@@ -4985,12 +5073,26 @@ def _func_update_efc_force(constraint_state: array_class.ConstraintState, rigid_
             if i_c < constraint_state.n_constraints[i_b]:
                 constraint_state.prev_active[i_c, i_b] = constraint_state.active[i_c, i_b]
 
-    qd.loop_config(name="update_constraint_forces", serialize=rigid_config.para_level < gs.PARA_LEVEL.PARTIAL)
-    for i_c, i_b in qd.ndrange(
-        len_constraints, _B, axes=qd.static((1, 0) if rigid_config.constraint_layout_batch_first else None)
-    ):
-        if i_c < constraint_state.n_constraints[i_b]:
-            _func_update_efc_force_body(i_c, i_b, constraint_state, rigid_config)
+    # On the cooperative path, one block per env strides its rows (see _func_update_constraint_forces in
+    # solver_breakdown.py).
+    if qd.static(rigid_config.enable_cooperative_constraint_kernels):
+        BLOCK_DIM = qd.static(32)
+        qd.loop_config(name="update_constraint_forces", block_dim=BLOCK_DIM)
+        for i_flat in range(_B * BLOCK_DIM):
+            tid = i_flat % BLOCK_DIM
+            i_b = i_flat // BLOCK_DIM
+            n_con = constraint_state.n_constraints[i_b]
+            for i_chunk_ in range((n_con + BLOCK_DIM - 1) // BLOCK_DIM):
+                i_c = i_chunk_ * BLOCK_DIM + tid
+                if i_c < n_con:
+                    _func_update_efc_force_body(i_c, i_b, constraint_state, rigid_config)
+    else:
+        qd.loop_config(name="update_constraint_forces", serialize=rigid_config.para_level < gs.PARA_LEVEL.PARTIAL)
+        for i_c, i_b in qd.ndrange(
+            len_constraints, _B, axes=qd.static((1, 0) if rigid_config.constraint_layout_batch_first else None)
+        ):
+            if i_c < constraint_state.n_constraints[i_b]:
+                _func_update_efc_force_body(i_c, i_b, constraint_state, rigid_config)
 
 
 @qd.func
@@ -5264,14 +5366,27 @@ def _initialize_Jaref_parallel(
     n_dofs = constraint_state.jac.shape[1]
     len_constraints = constraint_state.Jaref.shape[0]
 
-    # Innermost ndrange axis matches the stride-1 axis of jac so jac loads coalesce: i_c-innermost under the flipped
-    # layout, i_b-innermost under canonical.
-    qd.loop_config(name="init_jaref_parallel", serialize=rigid_config.para_level < gs.PARA_LEVEL.PARTIAL)
-    for i_c, i_b in qd.ndrange(
-        len_constraints, _B, axes=qd.static((1, 0) if rigid_config.constraint_layout_batch_first else None)
-    ):
-        if i_c < constraint_state.n_constraints[i_b]:
-            _initialize_Jaref_body(i_c, i_b, n_dofs, qacc, constraint_state, rigid_config)
+    # Lanes vary the stride-1 axis of jac so jac loads coalesce: i_c under the flipped layout, i_b under canonical. On
+    # the cooperative path, one block per env strides its rows (see _func_update_constraint_forces in
+    # solver_breakdown.py).
+    if qd.static(rigid_config.enable_cooperative_constraint_kernels):
+        BLOCK_DIM = qd.static(32)
+        qd.loop_config(name="init_jaref_parallel", block_dim=BLOCK_DIM)
+        for i_flat in range(_B * BLOCK_DIM):
+            tid = i_flat % BLOCK_DIM
+            i_b = i_flat // BLOCK_DIM
+            n_con = constraint_state.n_constraints[i_b]
+            for i_chunk_ in range((n_con + BLOCK_DIM - 1) // BLOCK_DIM):
+                i_c = i_chunk_ * BLOCK_DIM + tid
+                if i_c < n_con:
+                    _initialize_Jaref_body(i_c, i_b, n_dofs, qacc, constraint_state, rigid_config)
+    else:
+        qd.loop_config(name="init_jaref_parallel", serialize=rigid_config.para_level < gs.PARA_LEVEL.PARTIAL)
+        for i_c, i_b in qd.ndrange(
+            len_constraints, _B, axes=qd.static((1, 0) if rigid_config.constraint_layout_batch_first else None)
+        ):
+            if i_c < constraint_state.n_constraints[i_b]:
+                _initialize_Jaref_body(i_c, i_b, n_dofs, qacc, constraint_state, rigid_config)
 
 
 @qd.func

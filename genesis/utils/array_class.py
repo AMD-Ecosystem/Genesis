@@ -337,11 +337,23 @@ class RigidInfo:
     EPS: qd.Tensor
 
 
+def _is_tensor_addressable(shape, dtype) -> bool:
+    """
+    Whether every backend can address all the elements of a solver tensor of this shape and dtype.
+
+    A tensor holds at most 2^31 - 1 elements, and at most 2 GiB on Metal.
+    """
+    # FIXME: quadrants#963 - Metal silently mis-addresses the tensors above 2 GiB instead of raising.
+    if gs.backend == gs.metal:
+        return math.prod(shape) * np.dtype(dtype).itemsize <= 2**31
+    return math.prod(shape) <= np.iinfo(np.int32).max
+
+
 def get_rigid_info(solver, kinematic_only):
     _B = solver._B
 
     mass_mat_shape = (solver.n_dofs_, solver.n_dofs_, _B)
-    if math.prod(mass_mat_shape) > np.iinfo(np.int32).max:
+    if not _is_tensor_addressable(mass_mat_shape, gs.np_float):
         gs.raise_exception(
             f"Mass matrix shape (n_dofs={solver.n_dofs_}, n_dofs={solver.n_dofs_}, n_envs={_B}) is too large."
         )
@@ -1024,7 +1036,7 @@ def get_constraint_state(constraint_solver, solver, collider):
     jac_dofs_idx_shape = (len_constraints_, min(solver.n_dofs_, max(2, 2 * links_chain_n_dofs.max(initial=0))), _B)
     jac_n_dofs_shape = (len_constraints_, _B)
 
-    if math.prod(jac_shape) > np.iinfo(np.int32).max:
+    if not _is_tensor_addressable(jac_shape, gs.np_float):
         gs.raise_exception(
             f"Jacobian shape (n_constraints={len_constraints_}, n_dofs={solver.n_dofs_}, n_envs={_B}) is too large."
         )
@@ -1268,7 +1280,7 @@ class ContactCache:
 
 def get_contact_cache(solver, n_possible_pairs, active):
     # Only the convex-convex detection reads the cache, so the other scenes keep it empty
-    shape = maybe_shape((n_possible_pairs, solver._B), active)
+    shape = maybe_shape((max(n_possible_pairs, 1), solver._B), active)
     return ContactCache(
         normal=V_VEC(3, dtype=gs.qd_float, shape=shape),
         penetration=V(dtype=gs.qd_float, shape=shape),
@@ -1412,7 +1424,7 @@ def get_collider_state(
         # A pair holds its first contact and its four perturbed ones (see N_PERTURBATIONS in narrowphase.py), or its
         # first contact alone under the contact patch (see NarrowphaseWorkQueues)
         narrowphase_work_queues=get_narrowphase_work_queues(
-            max_collision_pairs_broad * _B, 1 if solver._options.enable_contact_patch else 5, split_narrowphase
+            max(max_collision_pairs_broad, 1) * _B, 1 if solver._options.enable_contact_patch else 5, split_narrowphase
         ),
         contact_sort_key=V(dtype=gs.qd_float, shape=(max(max_candidate_contacts, 1), _B)),
         contact_sort_idx=V(dtype=gs.qd_int, shape=(max(max_candidate_contacts, 1), _B)),
@@ -1451,25 +1463,15 @@ def get_verts_spatial_grid(solver):
 @qd.data_oriented
 class ColliderStaticConfig(metaclass=AutoInitMeta):
     has_terrain: bool
-    # True when the scene has convex-convex collision pairs not handled by
-    # func_narrow_phase_convex_specializations (box-box, plane-box). Computed once
-    # at scene build time by iterating all geom pairs in collider._init_static_config().
-    # On GPU, the split narrowphase path runs (contact0 + multicontact + sort).
-    # On CPU, falls back to the monolithic func_narrow_phase_convex_vs_convex.
+    # True when a convex-convex pair escapes func_narrow_phase_convex_specializations (box-box, plane-box) and reaches
+    # the general narrowphase: the split narrowphase on GPU (contact0 + multicontact + sort), the monolithic
+    # func_narrow_phase_convex_vs_convex on CPU. Also gates the deterministic contact sort (see func_sort_contacts),
+    # which orders the contacts independently of the racy narrowphase layout. See its resolution in collider.py.
     has_non_box_plane_convex_convex: bool
     has_convex_specialization: bool
     has_nonconvex_nonterrain: bool
-    # True when link-pair contact pruning can ever do useful work. False when every link has at most one convex geom and
-    # no terrain is present (each (link_a, link_b) bucket then holds at most one geom-pair's contacts, capped at
-    # n_contacts_per_convex_pair, so the 2D hull is at best a marginal reduction). Lets us skip the pruning kernel call
-    # and its scratch buffers entirely. Composes with contact islands: pruning writes a logical permutation into
-    # contact_sort_idx and the island construction reads contacts through it, so pruning collapses the contacts first.
+    # Whether the link-pair contact pruning pass is compiled in, see its resolution in collider.py
     has_prunable_contacts: bool
-    # True when contacts are ordered deterministically by position in add_inequality_constraints, making the contact
-    # order independent of the racy atomic_add narrowphase layout. Only meaningful when has_non_box_plane_convex_convex
-    # on GPU; disabled in autodiff (the gradient writeback indexes contacts by physical layout, so a non-identity
-    # permutation would misattach gradients).
-    spatial_sort_supported: bool
     # maximum number of contact pairs per collision pair
     n_contacts_per_convex_pair: int
     # maximum number of contact pairs per nonconvex (vertex-vs-SDF) collision pair; >= n_contacts_per_convex_pair
@@ -2037,7 +2039,7 @@ class SDFInfo:
 
 
 def get_sdf_info(n_geoms, n_cells, n_coarse_cells):
-    if math.prod((n_cells, 3)) > np.iinfo(np.int32).max:
+    if not _is_tensor_addressable((n_cells, 3), gs.np_float):
         gs.raise_exception(
             f"SDF Gradient shape (n_cells={n_cells}, 3) is too large. Consider manually setting larger "
             "'sdf_cell_size' in 'gs.materials.Rigid' options."
@@ -2701,7 +2703,7 @@ class VVertsState:
 def get_vverts_state(solver, is_active=True):
     if not is_active:
         return VVertsState(pos=V(dtype=gs.qd_vec3, shape=()))
-    if math.prod((solver.n_custom_vverts_, solver._B, 3)) > np.iinfo(np.int32).max:
+    if not _is_tensor_addressable((solver.n_custom_vverts_, solver._B, 3), gs.np_float):
         gs.raise_exception(
             f"Custom-vverts state shape (n_custom_vverts={solver.n_custom_vverts_}, B={solver._B}, 3) is too large. "
             "Consider opting fewer kinematic entities into 'enable_custom_vverts=True', or reducing 'n_envs'."
@@ -3000,6 +3002,10 @@ class RigidSimStaticConfig(metaclass=AutoInitMeta):
     # single mass block (the common case: one kinematic tree). The tile width is always 32: the path is only taken
     # when the per-entity block exceeds shared memory, which on any real GPU means well over 48 DOFs.
     enable_register_tiled_mass: bool = False
+    # When True, the shared-memory mass factor also solves the smooth acceleration from the forces against the factor it
+    # holds, which runs it after the force passes, and func_compute_qacc skips its own solve. See the rigid solver's
+    # resolution for the gating.
+    enable_fused_smooth_acc_solve: bool = False
     # When True, func_solve_init seeds every island's factor with the tiled per-island kernels at any env count. The
     # monolith self-seeds with the scalar per-island factor otherwise. See the rigid solver's resolution for the gating.
     enable_tiled_island_seed: bool = False

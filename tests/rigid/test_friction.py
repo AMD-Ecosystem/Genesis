@@ -210,12 +210,13 @@ def test_static_friction(mode, friction, n_boxes, solver, scale, mesh_boxes, sho
     contacts_link_a = torch.arange(n_boxes, device=gs.device).repeat_interleave(4)
     scene.build()
 
-    # The solver arms are provably exercised: on GPU the cooperative decomposed arm engages once the chain reaches the
-    # 16-DOF threshold (3 boxes); prefer_decomposed_solver is pinned by the test infra (1 on GPU, 0 on CPU).
+    # On GPU the cooperative decomposed arm engages from 16 DOFs (3 boxes) in performance mode, at any size otherwise.
+    # prefer_decomposed_solver is pinned by the test infra (1 on GPU, 0 on CPU).
     rigid_solver = scene.sim.rigid_solver
     if gs.backend != gs.cpu:
-        assert rigid_solver.rigid_config.enable_cooperative_constraint_kernels == (6 * n_boxes >= 16)
-        assert rigid_solver.rigid_config.prefer_decomposed_solver == (6 * n_boxes >= 16)
+        is_cooperative = gs.use_ndarray or 6 * n_boxes >= 16
+        assert rigid_solver.rigid_config.enable_cooperative_constraint_kernels == is_cooperative
+        assert rigid_solver.rigid_config.prefer_decomposed_solver == is_cooperative
 
     # Force needed to hold the floating boxes static without slipping
     # Native floats: the equilibrium below solves for the rest penetrations with scipy, which needs its residual to
