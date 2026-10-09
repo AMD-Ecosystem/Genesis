@@ -21,7 +21,7 @@ For more technical details, refer to our [blog post](https://genesis.ai/blog/the
 1. [What is Genesis World?](#what-is-genesis-world)
 2. [Catalogue](#catalogue)
 3. [Quick Installation](#quick-installation)
-4. [ROCm 10.0.0](#rocm-1000)
+4. [ROCm 10.1.0](#rocm-1010)
 5. [Contribution](#contributing-to-genesis)
 6. [Support](#support)
 7. [License and Acknowledgments](#license-and-acknowledgments)
