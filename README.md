@@ -10,7 +10,7 @@
 
 
 
-**Genesis World** is a simulation platform for physical AI developments. It combines a unified multi-physics engine, a photo-realistic renderer ([Nyx](https://github.com/Genesis-Embodied-AI/genesis-nyx)), and a cross-platform compiler ([Quadrants](https://github.com/AMD-Ecosystem/quadrants/tree/rocm10.0.0_r26.10)) behind a Pythonic simulation interface. Genesis World is designed to scale from a single laptop kernel to datacenter-grade GPUs, while remaining easy to read, extend, and embed in research code.
+**Genesis World** is a simulation platform for physical AI developments. It combines a unified multi-physics engine, a photo-realistic renderer ([Nyx](https://github.com/Genesis-Embodied-AI/genesis-nyx)), and a cross-platform compiler ([Quadrants](https://github.com/AMD-Ecosystem/quadrants/tree/rocm10.1.0_r26.10)) behind a Pythonic simulation interface. Genesis World is designed to scale from a single laptop kernel to datacenter-grade GPUs, while remaining easy to read, extend, and embed in research code.
 
 It was previously named **Genesis** and started as an academic project since Dec 2024, and its development is now officially supported by [Genesis AI](https://www.genesis.ai/).
 
@@ -36,7 +36,7 @@ Genesis World occupies the four layers inside the dashed box. Above sits whateve
 - **Simulation Interface** — the user-facing API: asset parsing (URDF, MJCF, OBJ, GLB, USD, …), entity accessors, controllers, sensors, parallel and heterogeneous environments, and a built-in GUI.
 - **Physics** — a unified multi-physics engine integrating Rigid, FEM, MPM, Particle (PBD / SPH), [uipc](https://github.com/spiriMirror/libuipc), an explicit coupler, and SAP, all sharing one scene and one state.
 - **Render** — three rendering paths plug in as camera sensors: **[Nyx](https://github.com/Genesis-Embodied-AI/genesis-nyx)** (our in-house renderer designed for robotics), Luisa (DSL ray tracer), and Pyrender (rasterizer).
-- **Compiler** — **[Quadrants](https://github.com/AMD-Ecosystem/quadrants/tree/rocm10.0.0_r26.10)** lowers Python kernel code to CUDA, AMD ROCm, Apple Metal, Vulkan, x86, and ARM64. It carries Genesis's autodiff, GPU graphs, and fastcache machinery.
+- **Compiler** — **[Quadrants](https://github.com/AMD-Ecosystem/quadrants/tree/rocm10.1.0_r26.10)** lowers Python kernel code to CUDA, AMD ROCm, Apple Metal, Vulkan, x86, and ARM64. It carries Genesis's autodiff, GPU graphs, and fastcache machinery.
 
 ### Documentation
 - [Genesis World](https://genesis-world.readthedocs.io/en/latest/)
@@ -128,18 +128,18 @@ It is recommended to systematically execute `pip install -e ".[dev]"` after movi
 | IPC solver (uipc backend) | `pip install pyuipc` *(Linux / Windows x86, NVIDIA GPU)* |
 | Nyx renderer | `pip install gs-nyx` — see [genesis-nyx](https://github.com/Genesis-Embodied-AI/genesis-nyx) |
 
-Quadrants is bundled with Genesis automatically; no extra install. The standalone wheel (`pip install quadrants`) is documented at [Quadrants](https://github.com/AMD-Ecosystem/quadrants/tree/rocm10.0.0_r26.10) for users who want the compiler outside Genesis.
+Quadrants is bundled with Genesis automatically; no extra install. The standalone wheel (`pip install quadrants`) is documented at [Quadrants](https://github.com/AMD-Ecosystem/quadrants/tree/rocm10.1.0_r26.10) for users who want the compiler outside Genesis.
 
-## ROCm 10.0.0
+## ROCm 10.1.0
 
-This branch is the ROCm 10.0.0 release of Genesis World. The image builds Quadrants from [AMD-Ecosystem/quadrants `rocm10.0.0_r26.10`](https://github.com/AMD-Ecosystem/quadrants/tree/rocm10.0.0_r26.10), then installs this Genesis tree on that wheel. The base image is `rocm/dev-ubuntu-24.04:10.0.0-full`. The host kernel driver must match ROCm 10.
+This branch is the ROCm 10.1.0 release of Genesis World. The image builds Quadrants from [AMD-Ecosystem/quadrants `rocm10.1.0_r26.10`](https://github.com/AMD-Ecosystem/quadrants/tree/rocm10.1.0_r26.10), then installs this Genesis tree on that wheel. The base image is `rocm/dev-ubuntu-24.04:10.1.0-full`. The host kernel driver must match ROCm 10.1.
 
 Clone this branch and build from the repository root:
 
 ```bash
-git clone -b rocm10.0.0_r26.10 https://github.com/AMD-Ecosystem/Genesis.git
+git clone -b rocm10.1.0_r26.10 https://github.com/AMD-Ecosystem/Genesis.git
 cd Genesis
-docker build -t genesis-release-rocm10 .
+docker build -t genesis-release-rocm10.1 .
 ```
 
 Run it on the AMD GPU. On a machine that also has a display GPU, set all three device variables to the CDNA device. That is GPU 0 on the machine used for this release. Do not set `QD_AMDGPU_V520`.
@@ -151,7 +151,7 @@ docker run --rm -it \
   -e HIP_VISIBLE_DEVICES=0 \
   -e ROCR_VISIBLE_DEVICES=0 \
   -e CUDA_VISIBLE_DEVICES=0 \
-  genesis-release-rocm10
+  genesis-release-rocm10.1
 ```
 
 With no command, the container prints the torch, Quadrants, and Genesis versions and exits. Add a command after the image name to run a program inside the container.
@@ -215,7 +215,7 @@ The Genesis source code is licensed under Apache 2.0.
 
 Genesis's development has been made possible thanks to these open-source projects:
 
-- [Taichi](https://github.com/taichi-dev/taichi): the original compiler that [Quadrants](https://github.com/AMD-Ecosystem/quadrants/tree/rocm10.0.0_r26.10) forked from in June 2025. Kudos to the Taichi team for their technical support over the years.
+- [Taichi](https://github.com/taichi-dev/taichi): the original compiler that [Quadrants](https://github.com/AMD-Ecosystem/quadrants/tree/rocm10.1.0_r26.10) forked from in June 2025. Kudos to the Taichi team for their technical support over the years.
 - [libuipc](https://github.com/spiriMirror/libuipc): IPC solver backend.
 - [FluidLab](https://github.com/zhouxian/FluidLab): Reference MPM solver implementation.
 - [SPH_Taichi](https://github.com/erizmr/SPH_Taichi): Reference SPH solver implementation.
