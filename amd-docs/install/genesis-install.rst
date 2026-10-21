@@ -70,17 +70,6 @@ Test Genesis
 
 After starting ``genesis-release-rocm10.1`` with ``bash``, run these commands inside the container.
 
-.. code-block:: bash
-
-   docker run --rm -it \
-     --device=/dev/kfd --device=/dev/dri \
-     --group-add "$(stat -c '%g' /dev/kfd)" \
-     -e HIP_VISIBLE_DEVICES=0 \
-     -e ROCR_VISIBLE_DEVICES=0 \
-     -e CUDA_VISIBLE_DEVICES=0 \
-     genesis-release-rocm10.1 \
-     bash
-
 Confirm the environment
 --------------------------------------------------------------------
 
