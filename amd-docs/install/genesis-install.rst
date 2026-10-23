@@ -56,14 +56,15 @@ Clone this branch and build from the repository root.
         -e HIP_VISIBLE_DEVICES=0 \
         -e ROCR_VISIBLE_DEVICES=0 \
         -e CUDA_VISIBLE_DEVICES=0 \
-        genesis-release-rocm10.1
+        genesis-release-rocm10.1 \
+        bash
+
+      # Print the versions of installed components
+      python -c "import torch, quadrants, genesis; print('torch', torch.__version__); print('quadrants', quadrants.__version_str__); print('genesis', genesis.__version__)"
 
    .. note::
 
       Do not set ``QD_AMDGPU_V520``.
-
-   With no command, the container prints the torch, Quadrants, and Genesis versions and exits.
-   Add a command after the image name to run a program inside the container.
 
 Test Genesis
 ====================================================================
@@ -73,8 +74,7 @@ After starting ``genesis-release-rocm10.1`` with ``bash``, run these commands in
 Confirm the environment
 --------------------------------------------------------------------
 
-The run with no command, shown above, prints the torch, Quadrants, and Genesis versions and exits.
-The pytest commands below run inside the container started with ``bash``.
+Run the following PyTest commands inside the container to test your Genesis environment.
 
 Run the validated Genesis benchmarks
 --------------------------------------------------------------------
