@@ -23,19 +23,19 @@ Why Genesis?
 
 Genesis is aimed at robotics and embodied-AI workloads that need a lot of simulated experience:
 
-- **One scene, several solvers.** Rigid bodies, FEM, MPM, particle methods (PBD and SPH),
+- **One scene, several solvers:** Rigid bodies, FEM, MPM, particle methods (PBD and SPH),
   an IPC solver, and an explicit coupler share a scene and a state instead of living in
   separate simulators.
 
-- **A Python interface over compiled kernels.** Assets, entities, controllers, and sensors
+- **A Python interface over compiled kernels:** Assets, entities, controllers, and sensors
   are ordinary Python. The inner loops are Quadrants kernels, so a laptop script and a
   batched GPU run use the same scene code.
 
-- **Batching for learning.** Parallel and heterogeneous environments, domain randomization,
+- **Batching for learning:** Parallel and heterogeneous environments, domain randomization,
   and sensors (cameras, depth, IMU, lidar, contact) are part of the simulation interface,
   which is the shape robot-learning and data-generation pipelines expect.
 
-- **A renderer in the same stack.** Camera sensors can use Nyx, the Luisa ray tracer, or
+- **A renderer in the same stack:** Camera sensors can use Nyx, the Luisa ray tracer, or
   Pyrender, so perception data can be produced from the same scene the physics steps.
 
 Features and use cases
@@ -43,32 +43,32 @@ Features and use cases
 
 Genesis provides the following features:
 
-- **Physics.** Rigid contact and articulation, FEM, MPM, SPH, PBD (cloth and liquid),
+- **Physics:** Rigid contact and articulation, FEM, MPM, SPH, PBD (cloth and liquid),
   stable fluids, IPC through the uipc backend, SAP coupling, and couplers that attach
   those solvers to one another.
 
-- **Assets and control.** URDF, MJCF, OBJ, GLB, USD, and related formats; joint
+- **Assets and control:** URDF, MJCF, OBJ, GLB, USD, and related formats; joint
   controllers, differential IK, and batched IK.
 
-- **Sensors and viewing.** Depth, IMU, lidar, tactile, contact force, and a built-in
+- **Sensors and viewing:** Depth, IMU, lidar, tactile, contact force, and a built-in
   GUI for joint control and debug drawing.
 
-- **Parallel environments.** Many copies of a scene on one device, including
+- **Parallel environments:** Many copies of a scene on one device, including
   heterogeneous environments and domain randomization.
 
-- **Rendering.** Nyx for robotics-oriented cameras, Luisa for ray tracing, and
+- **Rendering:** Nyx for robotics-oriented cameras, Luisa for ray tracing, and
   Pyrender for rasterization.
 
 Genesis is commonly used in the following scenarios:
 
-- **Robot learning.** Train or evaluate policies against articulated robots such as
+- **Robot learning:** Train or evaluate policies against articulated robots such as
   manipulators, humanoids, and quadrupeds, with batched environments on the GPU.
 
-- **Synthetic data.** Generate camera, depth, and contact traces from scripted or
+- **Synthetic data:** Generate camera, depth, and contact traces from scripted or
   randomized scenes.
 
-- **Multi-physics experiments.** Study contact, soft bodies, cloth, and fluids in one
+- **Multi-physics experiments:** Study contact, soft bodies, cloth, and fluids in one
   process instead of stitching simulators together.
 
-- **Compiler bring-up.** Use the rigid benchmarks as a check that Quadrants is producing
+- **Compiler bring-up:** Use the rigid benchmarks as a check that Quadrants is producing
   correct, fast kernels on a new GPU backend.
