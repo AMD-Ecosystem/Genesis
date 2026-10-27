@@ -15,7 +15,7 @@ To use Genesis `1.4.3 <https://github.com/Genesis-Embodied-AI/genesis-world/rele
 
 - **ROCm version:** `10.1 <https://rocm.docs.amd.com/en/docs-10.1.0/>`__
 - **Operating system:** Ubuntu 24.04
-- **GPU platform:** AMD Instinct™ MI300X, MI325X and MI355X
+- **GPU platform:** AMD Instinct™ MI300X, MI350X and MI355X
 - **Python:** `3.12 <https://www.python.org/downloads/release/python-31215/>`__
 - **PyTorch:** `2.13 <https://github.com/pytorch/pytorch/tree/release/2.13>`__
 
