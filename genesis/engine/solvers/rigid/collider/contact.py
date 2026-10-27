@@ -408,6 +408,8 @@ def func_add_contact(
         if not qd.static(use_atomic):
             collider_state.n_contacts[i_b] = i_c + 1
     else:
+        if qd.static(use_atomic):
+            qd.atomic_sub(collider_state.n_contacts[i_b], 1)
         errno[i_b] = errno[i_b] | array_class.ErrorCode.OVERFLOW_COLLISION_PAIRS
 
 

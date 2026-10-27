@@ -1638,6 +1638,46 @@ def test_num_contact_overflow(
         assert scene.is_built is not is_raised_by_build
 
 
+@pytest.mark.required
+@pytest.mark.parametrize("backend", [gs.gpu])
+def test_atomic_contact_candidate_overflow(show_viewer):
+    """The atomic single-contact path must give back a reservation that does not fit.
+
+    On GPU the convex narrow phase is split, and a sphere pair stores its one contact with
+    func_add_contact(use_atomic=True) when GJK is off. A cap of one collision pair sizes the candidate
+    buffer at five contacts, while the broad phase still admits eight pairs. Six separated spheres on a
+    plane emit six contacts, so the sixth reservation is past the buffer. CPU keeps use_atomic=False and
+    never compiles this branch.
+    """
+    from genesis.engine.simulator import RATE_CHECK_ERRNO
+
+    scene = gs.Scene(
+        rigid_options=gs.options.RigidOptions(
+            max_collision_pairs=1,
+            use_gjk_collision=False,
+        ),
+        show_viewer=show_viewer,
+    )
+    scene.add_entity(morph=gs.morphs.Plane())
+    for i in range(6):
+        scene.add_entity(
+            morph=gs.morphs.Sphere(
+                pos=(float(i), 0.0, 0.0999),
+                radius=0.1,
+            ),
+        )
+
+    with pytest.raises(gs.GenesisException, match="max number of candidate contact points"):
+        scene.build()
+        collider_info = scene.rigid_solver.collider.collider_info
+        assert int(collider_info.max_candidate_contacts[None]) == 5
+        assert int(collider_info.max_collision_pairs_broad[None]) >= 6
+        # errno is only polled every RATE_CHECK_ERRNO substeps, so one extra step is required to guarantee that an
+        # error triggered by the first steps gets raised.
+        for _ in range(RATE_CHECK_ERRNO + 1):
+            scene.step()
+
+
 @pytest.mark.slow  # ~200s
 @pytest.mark.required
 def test_filter_neutral_self_collisions(show_viewer):

@@ -389,6 +389,9 @@ def _func_broad_phase_all_vs_all(
             collider_state.broad_collision_pairs[n_broad, i_b][0] = i_ga
             collider_state.broad_collision_pairs[n_broad, i_b][1] = i_gb
         else:
+            # The reservation already bumped the count. Put it back so later kernels do not walk
+            # past broad_collision_pairs. The overflow flag is what check_errno turns into an exception.
+            qd.atomic_sub(collider_state.n_broad_pairs[i_b], 1)
             errno[i_b] = errno[i_b] | array_class.ErrorCode.OVERFLOW_CANDIDATE_CONTACTS
 
 
