@@ -11,7 +11,7 @@ Genesis on ROCm installation
 System requirements
 ====================================================================
 
-To use Genesis `1.4.3 <https://github.com/Genesis-Embodied-AI/genesis-world/releases/tag/v1.4.3>`__, you need the following prerequisites:
+To use Genesis `1.4.3 <https://github.com/AMD-Ecosystem/Genesis/tree/rocm10.1.0_r26.10>`__, you need the following prerequisites:
 
 - **ROCm version:** `10.1 <https://rocm.docs.amd.com/en/docs-10.1.0/>`__
 - **Operating system:** Ubuntu 24.04
