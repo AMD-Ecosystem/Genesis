@@ -55,7 +55,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3.12 -m venv /opt/venv \
-    && pip install -U "pip>=25.1"
+    && pip install -U "pip==26.2.2"
 
 # Clone the Quadrants branch that carries the spirv_codegen test link, then
 # initialize its submodules. ./build.py downloads LLVM 22 and the Vulkan SDK,
@@ -90,6 +90,20 @@ RUN pip install --index-url https://stable.repo.amd.com/rocm/whl-next/ \
     && pip install /src/quadrants/dist/quadrants-*.whl \
     && pip install -r /tmp/genesis-reqs.txt \
     && pip install --group test
+
+# These versions clear fixed findings in the release image. They are not
+# selected by the dependency sets installed above: certifi, GitPython, and
+# virtualenv are transitive, filelock is only in the usd extra, and pip 26.2.2
+# replaces the certifi copy bundled inside pip. setuptools and urllib3 stay
+# at or above the versions that already satisfy their findings.
+RUN pip install --no-cache-dir \
+        "pip==26.2.2" \
+        "certifi==2026.10.18" \
+        "GitPython==3.2.1" \
+        "filelock==4.2.1" \
+        "virtualenv==21.14.9" \
+        "setuptools>=78.1.1" \
+        "urllib3>=2.8.0"
 
 WORKDIR /src/Genesis
 COPY . /src/Genesis
