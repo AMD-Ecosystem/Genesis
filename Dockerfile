@@ -82,7 +82,7 @@ COPY pyproject.toml /tmp/genesis-pyproject.toml
 RUN python -c 'import tomllib; from pathlib import Path; \
 data = tomllib.loads(Path("/tmp/genesis-pyproject.toml").read_text()); \
 deps = data["project"]["dependencies"] + data["project"]["optional-dependencies"]["dev"]; \
-kept = [dep for dep in deps if __import__("re").match(r"([A-Za-z0-9][A-Za-z0-9._-]*)", dep.split(";", 1)[0].strip()).group(1).lower().replace("_", "-") != "quadrants"]; \
+kept = [dep for dep in deps if __import__("re").match(r"([A-Za-z0-9][A-Za-z0-9._-]*)", dep.split(";", 1)[0].strip()).group(1).lower().replace("_", "-") not in {"quadrants", "pillow"}]; \
 Path("/tmp/genesis-reqs.txt").write_text("\n".join(kept) + "\n")'
 
 RUN pip install --index-url https://stable.repo.amd.com/rocm/whl-next/ \
@@ -96,9 +96,12 @@ RUN pip install --index-url https://stable.repo.amd.com/rocm/whl-next/ \
 # virtualenv are transitive, filelock is only in the usd extra, and pip 26.2.2
 # replaces the certifi copy bundled inside pip. setuptools and urllib3 stay
 # at or above the versions that already satisfy their findings.
+# Pillow is installed here, not in the requirements solve. moviepy 2.2.1
+# requires pillow<12, and pip 26.2.2 rejects that together with Pillow>=13.
 RUN pip install --no-cache-dir \
         "pip==26.2.2" \
         "certifi==2026.10.19" \
+        "Pillow==13.0.0" \
         "GitPython==3.2.1" \
         "filelock==4.2.1" \
         "virtualenv==21.14.9" \
