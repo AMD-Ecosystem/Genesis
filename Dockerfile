@@ -98,7 +98,7 @@ RUN pip install --index-url https://stable.repo.amd.com/rocm/whl-next/ \
 # at or above the versions that already satisfy their findings.
 RUN pip install --no-cache-dir \
         "pip==26.2.2" \
-        "certifi==2026.10.18" \
+        "certifi==2026.10.19" \
         "GitPython==3.2.1" \
         "filelock==4.2.1" \
         "virtualenv==21.14.9" \
