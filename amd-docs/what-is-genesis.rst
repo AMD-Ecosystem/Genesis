@@ -36,7 +36,7 @@ Genesis is aimed at robotics and embodied-AI workloads that need a lot of simula
   which is the shape robot-learning and data-generation pipelines expect.
 
 - **A renderer in the same stack:** Camera sensors can use Nyx, the Luisa ray tracer, or
-  Pyrender, so perception data can be produced from the same scene the physics steps.
+  Pyrender, so perception data can be produced from the same scene as the physics steps.
 
 Features and use cases
 ====================================================================
