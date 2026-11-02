@@ -15,8 +15,8 @@ deformable materials, fluids, and coupled solvers, then render what those solver
 
 The compiler underneath the numeric kernels is Quadrants. Upstream Genesis is developed
 as genesis-world. This ROCm edition is the
-`rocm10.1.0_r26.10 <https://github.com/AMD-Ecosystem/Genesis/tree/rocm10.1.0_r26.10>`__
-branch of `AMD-Ecosystem/Genesis <https://github.com/AMD-Ecosystem/Genesis>`__.
+`https://github.com/AMD-Ecosystem/Genesis/tree/rocm10.1.0_r26.10 <https://github.com/AMD-Ecosystem/Genesis/tree/rocm10.1.0_r26.10>`__
+branch.
 
 Why Genesis?
 ====================================================================

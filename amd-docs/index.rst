@@ -12,8 +12,8 @@ Genesis World, still often called Genesis, is a simulation platform for physical
 It combines a unified multi-physics engine, camera rendering, and a cross-platform
 compiler behind a Python scene API. The compiler underneath the numeric kernels is
 Quadrants. Upstream Genesis is developed as genesis-world. This ROCm edition is the
-`rocm10.1.0_r26.10 <https://github.com/AMD-Ecosystem/Genesis/tree/rocm10.1.0_r26.10>`__
-branch of AMD-Ecosystem/Genesis.
+`https://github.com/AMD-Ecosystem/Genesis/tree/rocm10.1.0_r26.10 <https://github.com/AMD-Ecosystem/Genesis/tree/rocm10.1.0_r26.10>`__
+branch.
 
 Use Genesis on ROCm to simulate physical AI workloads on AMD Instinct GPUs.
 The same Python scene can step rigid robots, deformable materials, fluids, and
