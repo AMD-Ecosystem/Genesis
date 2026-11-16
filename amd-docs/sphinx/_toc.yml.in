@@ -1,0 +1,29 @@
+defaults:
+  numbered: False
+  maxdepth: 6
+root: index
+subtrees:
+- entries:
+  - file: what-is-genesis.rst
+    title: What is Genesis?
+
+- caption: Install
+  entries:
+  - file: install/genesis-install.rst
+    title: Install Genesis
+
+- caption: Reference
+  entries:
+  - url: https://genesis-world.readthedocs.io/en/latest/
+    title: Genesis World documentation (upstream)
+  - url: https://genesis-embodied-ai.github.io/quadrants/index.html
+    title: Quadrants documentation (upstream)
+
+- caption: About
+  entries:
+  - url: https://genesis.ai/blog/the-role-of-simulation-in-scalable-robotics-genesis-world-10-and-the-path-forward
+    title: Genesis World blog (upstream)
+  - url: https://github.com/AMD-Ecosystem/Genesis/blob/docs/26.10/.github/contributing/PULL_REQUESTS.md
+    title: Contribute to Genesis
+  - file: about/license.rst
+    title: License
