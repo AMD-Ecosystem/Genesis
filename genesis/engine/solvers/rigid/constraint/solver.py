@@ -31,6 +31,7 @@ from genesis.utils.misc import (
 
 from ..collider.contact import func_add_contacts_force_to_links
 from . import backward as backward_constraint_solver, linesearch, noslip as constraint_noslip
+from . import seed_amdgpu
 from .data import ConstraintState
 from .island import (
     func_build_islands,
@@ -5720,7 +5721,22 @@ def func_solve_init(
         # consuming it, so the graph starts from the assembled Hessian and maintains it from its first iteration on
         # (see _kernel_solve_graph), the coupled elliptic-cone block bracketed around the factor as the graph does. The
         # monolith keeps the cone in the L it persists, so the removal runs for the graph's seed alone.
-        func_island_hessian_assemble_all(constraint_state, rigid_info, rigid_config)
+        if qd.static(seed_amdgpu.seed_fused_cap(rigid_config, constraint_state.nt_H) > 0):
+            # AMDGPU: the same assembly env-minor (see seed_amdgpu.py), the lower triangle of an env cut into AMD_ASM_K
+            # shares, one wave per share, the 64 lanes of a wave owning AMD_ASM_E = 64 consecutive envs
+            AMD_ASM_N = qd.static(seed_amdgpu.seed_fused_cap(rigid_config, constraint_state.nt_H))
+            AMD_ASM_K = qd.static(4)
+            AMD_ASM_E = qd.static(64)
+            AMD_ASM_BL = qd.static(AMD_ASM_E * AMD_ASM_K)
+            qd.loop_config(name="island_hessian_assemble", block_dim=AMD_ASM_BL)
+            for i_flat in range(((_B + AMD_ASM_E - 1) // AMD_ASM_E) * AMD_ASM_BL):
+                tid = i_flat % AMD_ASM_BL
+                i_b = (i_flat // AMD_ASM_BL) * AMD_ASM_E + tid % AMD_ASM_E
+                sub = tid // AMD_ASM_E
+                if i_b < _B:
+                    seed_amdgpu.func_assemble_env(i_b, sub, constraint_state, rigid_info, AMD_ASM_N, AMD_ASM_K)
+        else:
+            func_island_hessian_assemble_all(constraint_state, rigid_info, rigid_config)
         func_wrap_cone_hessian(constraint_state, rigid_config, is_removal=False, is_enabled=True)
         if qd.static(not rigid_config.has_scalar_seed_factor):
             func_update_gradient_no_solve(dyn_state, constraint_state, rigid_config)
@@ -5793,9 +5809,76 @@ def func_solve_init(
                         i_b, constraint_state, rigid_info, rigid_config, certify=True
                     )
 
-    if qd.static(rigid_config.has_per_env_solve_seed):
+    if qd.static(seed_amdgpu.seed_fused_cap(rigid_config, constraint_state.nt_H) > 0):
+        # AMDGPU: the per-env seed, 32 consecutive envs per wave64 block, the factor staged in shared memory and the
+        # global traffic coalesced (see seed_amdgpu.py).
+        AMD_SEED_N = qd.static(seed_amdgpu.seed_fused_cap(rigid_config, constraint_state.nt_H))
+        AMD_SEED_S = qd.static(seed_amdgpu.tri_stride(AMD_SEED_N))
+        # Envs per seed block, and lanes per env (one wave64 per block)
+        AMD_LANES = qd.static(32)
+        AMD_K = qd.static(2)
+        AMD_BL = qd.static(AMD_LANES * AMD_K)
+        qd.loop_config(name="solve_seed", block_dim=AMD_BL)
+        for i_flat in range(((_B + AMD_LANES - 1) // AMD_LANES) * AMD_BL):
+            tid = i_flat % AMD_BL
+            b0 = (i_flat // AMD_BL) * AMD_LANES
+            e = tid % AMD_LANES
+            sub = tid // AMD_LANES
+            sh_L = qd.simt.block.SharedArray((AMD_LANES * AMD_SEED_S,), gs.qd_float)
+            i_b = b0 + e
+            has_awake_work = False
+            if i_b < _B:
+                has_awake_work = constraint_state.n_constraints[i_b] > 0
+                if qd.static(rigid_config.use_hibernation):
+                    has_awake_work = has_awake_work and rigid_info.n_awake_dofs[i_b] > 0
+            starts = seed_amdgpu.func_prefetch_starts(i_b, has_awake_work, constraint_state, AMD_SEED_N)
+            hds = seed_amdgpu.func_prefetch_diag(i_b, constraint_state, AMD_SEED_N)
+            seed_amdgpu.func_stage_block(_B, b0, tid, sh_L, constraint_state, AMD_SEED_N, True, AMD_LANES, AMD_BL)
+            qd.simt.block.sync()
+            dg = seed_amdgpu.func_factor_split(
+                i_b,
+                sh_L,
+                e * AMD_SEED_S,
+                sub,
+                has_awake_work,
+                starts,
+                hds,
+                constraint_state,
+                rigid_info,
+                AMD_SEED_N,
+                AMD_K,
+            )
+            # The factor's last barrier published the whole tile, which is only read from here on.
+            seed_amdgpu.func_stage_block(_B, b0, tid, sh_L, constraint_state, AMD_SEED_N, False, AMD_LANES, AMD_BL)
+            if sub == 0 and has_awake_work:
+                _wrote_search = False
+                if seed_amdgpu.func_is_dense_single_block(i_b, constraint_state):
+                    _wrote_search = seed_amdgpu.func_gradient_solve_lds(
+                        i_b, sh_L, e * AMD_SEED_S, dyn_state, constraint_state, AMD_SEED_N, dg
+                    )
+            qd.simt.block.mem_fence()
+            qd.simt.block.sync()
+            if sub == 0 and has_awake_work:
+                if not seed_amdgpu.func_is_dense_single_block(i_b, constraint_state):
+                    # Reads the factor the block wrote back to nt_H above.
+                    func_update_gradient_batch(i_b, dyn_state, constraint_state, rigid_info, rigid_config)
+                    for i_d in range(n_dofs):
+                        constraint_state.search[i_d, i_b] = -constraint_state.Mgrad[i_d, i_b]
+                elif not constraint_state.island.improved[0, i_b]:
+                    for i_d in range(n_dofs):
+                        constraint_state.search[i_d, i_b] = -constraint_state.Mgrad[i_d, i_b]
+                if qd.static(not rigid_config.requires_grad and not rigid_config.enable_mujoco_compatibility):
+                    constraint_state.improved[i_b] = linesearch.func_exit_islands_serial(
+                        i_b, constraint_state, rigid_info, rigid_config, certify=True
+                    )
+    elif qd.static(rigid_config.has_per_env_solve_seed):
         # A fully-asleep env has no awake DOF to move, so its solve is a no-op that neither arm iterates.
-        qd.loop_config(name="solve_seed", serialize=rigid_config.para_level < gs.PARA_LEVEL.ALL, block_dim=32)
+        qd.loop_config(
+            name="solve_seed",
+            serialize=rigid_config.para_level < gs.PARA_LEVEL.ALL,
+            # A whole wave64 on AMDGPU
+            block_dim=qd.static(64 if rigid_config.backend == gs.amdgpu else 32),
+        )
         for i_b in range(_B):
             has_awake_work = constraint_state.n_constraints[i_b] > 0
             if qd.static(rigid_config.use_hibernation):
