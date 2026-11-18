@@ -24,6 +24,7 @@ from genesis.engine.solvers.rigid.data import DynInfo, DynState, LinksState, Rig
 from genesis.grad.bridge import reversed_with
 from genesis.utils.data import eoa
 
+from . import mass_factor_amdgpu
 from .forward_kinematics import (
     LINK_SWEEP_PASS,
     func_forward_velocity_root,
@@ -89,13 +90,25 @@ def func_forward_dynamics(
         qd.static(rigid_config.integrator == gs.integrator.approximate_implicitfast),
         is_backward,
     )
+    # AMDGPU: the register-resident scalar factor also solves the smooth acceleration (see mass_factor_amdgpu.py)
+    AMD_FUSED_CAP = qd.static(mass_factor_amdgpu.fused_solve_cap(rigid_config, rigid_info.mass_mat_L, is_backward))
     # The fused solve needs the forces, and the force passes never read the factor, so it runs after them
-    if qd.static(not rigid_config.enable_fused_smooth_acc_solve):
+    if qd.static(not rigid_config.enable_fused_smooth_acc_solve and AMD_FUSED_CAP == 0):
         func_factor_mass(dyn_state, dyn_info, rigid_info, rigid_config, implicit_damping=False)
     func_bias_force(dyn_state, dyn_info, rigid_config)
     if qd.static(rigid_config.enable_fused_smooth_acc_solve):
         func_factor_mass(dyn_state, dyn_info, rigid_info, rigid_config, implicit_damping=False)
-    func_compute_qacc(dyn_state, rigid_info, rigid_config)
+    if qd.static(AMD_FUSED_CAP > 0):
+        # Factor, smooth acceleration and its copy into dofs.acc, in one pass (no hibernation on this path)
+        n_trees = rigid_info.trees_root_idx.shape[0]
+        _B = rigid_info.mass_mat.shape[2]
+        qd.loop_config(name="factor_mass", serialize=rigid_config.para_level < gs.PARA_LEVEL.PARTIAL)
+        for i_t, i_b in qd.ndrange(n_trees, _B, axes=qd.static(eoa(rigid_info.mass_mat_L))):
+            mass_factor_amdgpu.func_factor_mass_tree_regs_amdgpu(
+                i_t, i_b, dyn_state, dyn_info, rigid_info, rigid_config, False, True, AMD_FUSED_CAP
+            )
+    else:
+        func_compute_qacc(dyn_state, rigid_info, rigid_config)
 
 
 @reversed_with(is_backward=True)
@@ -1060,9 +1073,18 @@ def func_factor_mass(
                 tid, i_t, i_b, dyn_state, dyn_info, rigid_info, rigid_config, implicit_damping, BLOCK_DIM
             )
     elif qd.static(not rigid_config.enable_tiled_cholesky_mass_matrix or rigid_config.backend == gs.cpu):
+        # AMDGPU: register-resident smooth factor where the mass blocks are small and static (mass_factor_amdgpu.py)
+        AMD_REG_CAP = qd.static(
+            0 if implicit_damping else mass_factor_amdgpu.register_factor_cap(rigid_config, rigid_info.mass_mat_L)
+        )
         qd.loop_config(name="factor_mass", serialize=rigid_config.para_level < gs.PARA_LEVEL.PARTIAL)
         for i_t, i_b in qd.ndrange(n_trees, _B, axes=qd.static(eoa(rigid_info.mass_mat_L))):
-            func_factor_mass_tree(i_t, i_b, dyn_state, dyn_info, rigid_info, rigid_config, implicit_damping)
+            if qd.static(AMD_REG_CAP > 0):
+                mass_factor_amdgpu.func_factor_mass_tree_regs_amdgpu(
+                    i_t, i_b, dyn_state, dyn_info, rigid_info, rigid_config, False, False, AMD_REG_CAP
+                )
+            else:
+                func_factor_mass_tree(i_t, i_b, dyn_state, dyn_info, rigid_info, rigid_config, implicit_damping)
     else:
         BLOCK_DIM = qd.static(32)
         qd.loop_config(name="factor_mass", block_dim=BLOCK_DIM)
