@@ -5932,7 +5932,12 @@ def _kernel_solve_monolith(
     # The monolith arm solves each env whole (32 envs packed per warp); islands change only the per-env factor's block
     # structure, handled inside func_solve_iter, not the iteration scheme. Per-island parallelism is the decomposed
     # arm's job, so there is no separate island body here - ON and OFF run the identical packed-env solve.
-    qd.loop_config(serialize=rigid_config.para_level < gs.PARA_LEVEL.ALL, block_dim=32)
+    # On AMDGPU (wave64) a block of 32 threads leaves half of every wave masked off: one env per thread with no
+    # cooperation between them, so a block of 64 packs 64 live envs per wave without changing any per-env arithmetic.
+    qd.loop_config(
+        serialize=rigid_config.para_level < gs.PARA_LEVEL.ALL,
+        block_dim=qd.static(64 if rigid_config.backend == gs.amdgpu else 32),
+    )
     for i_b in range(_B):
         # A fully-asleep env has no awake DOF to move, so its Newton solve is a no-op. Skip the whole iteration loop
         # so step time tracks the awake set, not the total body count.
