@@ -31,6 +31,7 @@ from genesis.utils.misc import (
 
 from ..collider.contact import func_add_contacts_force_to_links
 from . import backward as backward_constraint_solver, linesearch, noslip as constraint_noslip
+from . import solve_init_amdgpu
 from .data import ConstraintState
 from .island import (
     func_build_islands,
@@ -5585,6 +5586,83 @@ def _initialize_Jaref_parallel(qacc: qd.template(), constraint_state: Constraint
 
 
 @qd.func
+def func_init_jaref_update_constraint_amdgpu(
+    qacc: qd.template(),
+    Ma: qd.template(),
+    cost: qd.template(),
+    dyn_state: DynState,
+    constraint_state: ConstraintState,
+    rigid_config: qd.template(),
+):
+    """initialize_Jaref + func_update_constraint in one env-minor dispatch, K lanes per env (see solve_init_amdgpu)."""
+    _B = constraint_state.jac.shape[2]
+    # Envs per wave (one wave64 per lane share) and lanes per env.
+    E = qd.static(64)
+    K = qd.static(solve_init_amdgpu.k_lanes(constraint_state.jac))
+    BL = qd.static(E * K)
+    qd.loop_config(name="init_jaref_update_constraint", block_dim=BL)
+    for i_flat in range(((_B + E - 1) // E) * BL):
+        tid = i_flat % BL
+        i_b = (i_flat // BL) * E + tid % E
+        sub = tid // E
+        n_dofs = constraint_state.qfrc_constraint.shape[0]
+        n_con = 0
+        if i_b < _B:
+            n_con = constraint_state.n_constraints[i_b]
+        # Rows: Jaref, then active / efc_force of the row
+        i_c = sub
+        while i_c < n_con:
+            _initialize_Jaref_body(i_c, i_b, qacc, constraint_state)
+            _func_update_efc_force_body(i_c, i_b, constraint_state, rigid_config)
+            i_c = i_c + K
+        qd.simt.block.sync()
+        # qfrc_constraint = J^T @ efc_force
+        if i_b < _B:
+            is_dense = True
+            if qd.static(not rigid_config.is_single_island):
+                is_dense = constraint_state.island.n_islands[i_b] == 1
+            if is_dense:
+                i_d = sub
+                while i_d < n_dofs:
+                    qfrc_constraint = gs.qd_float(0.0)
+                    for j_c in range(n_con):
+                        qfrc_constraint = (
+                            qfrc_constraint + constraint_state.jac[j_c, i_d, i_b] * constraint_state.efc_force[j_c, i_b]
+                        )
+                    constraint_state.qfrc_constraint[i_d, i_b] = qfrc_constraint
+                    i_d = i_d + K
+            elif sub == 0:
+                func_qfrc_scatter_sparse(i_b, constraint_state, False)
+        qd.simt.block.sync()
+        # Cost, in the generic order: the frictionloss rows' extra cost (zero on every other row), the dofs, the rows
+        if i_b < _B and sub == 0:
+            cost_i = gs.qd_float(0.0)
+            ne = constraint_state.n_constraints_equality[i_b]
+            nef = ne + constraint_state.n_constraints_frictionloss[i_b]
+            for j_c in range(n_con):
+                if ne <= j_c and j_c < nef:
+                    f = constraint_state.efc_frictionloss[j_c, i_b]
+                    r = constraint_state.diag[j_c, i_b]
+                    rf = r * f
+                    linear_neg = constraint_state.Jaref[j_c, i_b] <= -rf
+                    linear_pos = constraint_state.Jaref[j_c, i_b] >= rf
+                    c = linear_neg * f * (-0.5 * rf - constraint_state.Jaref[j_c, i_b])
+                    c = c + linear_pos * f * (-0.5 * rf + constraint_state.Jaref[j_c, i_b])
+                    cost_i = cost_i + c
+            for j_d in range(n_dofs):
+                cost_i = cost_i + 0.5 * (Ma[j_d, i_b] - dyn_state.dofs.qf_smooth[j_d, i_b]) * (
+                    qacc[j_d, i_b] - dyn_state.dofs.acc_smooth[j_d, i_b]
+                )
+            for j_c in range(n_con):
+                cost_i = cost_i + 0.5 * (
+                    constraint_state.Jaref[j_c, i_b] ** 2
+                    * constraint_state.efc_D[j_c, i_b]
+                    * constraint_state.active[j_c, i_b]
+                )
+            cost[i_b] = cost_i
+
+
+@qd.func
 def initialize_Ma(Ma: qd.Tensor, qacc: qd.Tensor, rigid_info: RigidInfo, rigid_config: qd.template()):
     # Flipped mass_mat layout=(2,1,0): physical (_B, n_dofs, n_dofs) with i_d1 stride-1. Make i_d1 the innermost
     # ndrange axis so adjacent lanes vary i_d1 -> coalesced reads of mass_mat[i_d1, i_d2, i_b]. qacc[i_d2, i_b] is
@@ -5681,15 +5759,26 @@ def func_solve_init(
         initialize_Ma(constraint_state.Ma, constraint_state.qacc, rigid_info, rigid_config)
 
     # Initialize solver accordingly Keyword calls: see the quadrants member-expansion note in func_solve_init.
-    initialize_Jaref(qacc=constraint_state.qacc, constraint_state=constraint_state, rigid_config=rigid_config)
-    func_update_constraint(
-        qacc=constraint_state.qacc,
-        Ma=constraint_state.Ma,
-        cost=constraint_state.cost,
-        dyn_state=dyn_state,
-        constraint_state=constraint_state,
-        rigid_config=rigid_config,
-    )
+    if qd.static(solve_init_amdgpu.jaref_update_fused(rigid_config)):
+        # AMDGPU: both passes in one env-minor dispatch, K lanes per env (see solve_init_amdgpu.py)
+        func_init_jaref_update_constraint_amdgpu(
+            qacc=constraint_state.qacc,
+            Ma=constraint_state.Ma,
+            cost=constraint_state.cost,
+            dyn_state=dyn_state,
+            constraint_state=constraint_state,
+            rigid_config=rigid_config,
+        )
+    else:
+        initialize_Jaref(qacc=constraint_state.qacc, constraint_state=constraint_state, rigid_config=rigid_config)
+        func_update_constraint(
+            qacc=constraint_state.qacc,
+            Ma=constraint_state.Ma,
+            cost=constraint_state.cost,
+            dyn_state=dyn_state,
+            constraint_state=constraint_state,
+            rigid_config=rigid_config,
+        )
 
     # The island partition itself (links_island_idx / dof_id) is built earlier, in add_inequality_constraints, before
     # the contact constraints are assembled; grouping the constraints by island needs the assembled jac, so it rides
