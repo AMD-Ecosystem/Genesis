@@ -31,6 +31,7 @@ from genesis.utils.misc import (
 
 from ..collider.contact import func_add_contacts_force_to_links
 from . import backward as backward_constraint_solver, linesearch, noslip as constraint_noslip
+from . import monolith_amdgpu
 from .data import ConstraintState
 from .island import (
     func_build_islands,
@@ -5851,6 +5852,24 @@ def func_solve_iter(
                         func_factor_island_incremental_or_direct(
                             i_b, i_island, constraint_state, rigid_info, rigid_config
                         )
+            elif qd.static(monolith_amdgpu.mono_rank1_cap(rigid_config, constraint_state.nt_H) > 0):
+                # AMDGPU: an env holding one island folds its flipped rows into its dense factor with the working
+                # vector in registers (see monolith_amdgpu); the same updates in the same order.
+                is_degenerated = False
+                if constraint_state.island.n_islands[i_b] == 1:
+                    is_degenerated = monolith_amdgpu.func_factor_incremental_dense_regs(
+                        i_b,
+                        constraint_state,
+                        rigid_info,
+                        rigid_config,
+                        qd.static(monolith_amdgpu.mono_rank1_cap(rigid_config, constraint_state.nt_H)),
+                    )
+                else:
+                    is_degenerated = func_hessian_and_cholesky_factor_incremental_batch(
+                        i_b, constraint_state, rigid_info, rigid_config
+                    )
+                if is_degenerated:
+                    func_hessian_and_cholesky_factor_direct_batch(i_b, constraint_state, rigid_info, rigid_config)
             else:
                 is_degenerated = func_hessian_and_cholesky_factor_incremental_batch(
                     i_b, constraint_state, rigid_info, rigid_config
@@ -5858,7 +5877,20 @@ def func_solve_iter(
                 if is_degenerated:
                     func_hessian_and_cholesky_factor_direct_batch(i_b, constraint_state, rigid_info, rigid_config)
 
-        func_update_gradient_batch(i_b, dyn_state, constraint_state, rigid_info, rigid_config)
+        if qd.static(monolith_amdgpu.mono_solve_cap(rigid_config, constraint_state.nt_H) > 0):
+            # AMDGPU: the gradient solve of the dense single block in registers (see monolith_amdgpu).
+            if monolith_amdgpu.func_is_dense_single_block(i_b, constraint_state):
+                monolith_amdgpu.func_gradient_solve_regs(
+                    i_b,
+                    dyn_state,
+                    constraint_state,
+                    rigid_config,
+                    qd.static(monolith_amdgpu.mono_solve_cap(rigid_config, constraint_state.nt_H)),
+                )
+            else:
+                func_update_gradient_batch(i_b, dyn_state, constraint_state, rigid_info, rigid_config)
+        else:
+            func_update_gradient_batch(i_b, dyn_state, constraint_state, rigid_info, rigid_config)
 
         constraint_state.improved[i_b] = linesearch.func_exit_islands_serial(
             i_b, constraint_state, rigid_info, rigid_config, certify=False
@@ -5944,7 +5976,17 @@ def _kernel_solve_monolith(
                 # Checked at the top so a solve certified converged on its seed runs zero iterations.
                 if not constraint_state.improved[i_b]:
                     break
-                func_solve_iter(i_b, dyn_state, constraint_state, rigid_info, rigid_config)
+                if qd.static(monolith_amdgpu.iter_rebase(rigid_config)):
+                    # AMDGPU: the env index, offset by a 0 loaded each iteration (see monolith_amdgpu.func_iter_env)
+                    func_solve_iter(
+                        monolith_amdgpu.func_iter_env(i_b, constraint_state),
+                        dyn_state,
+                        constraint_state,
+                        rigid_info,
+                        rigid_config,
+                    )
+                else:
+                    func_solve_iter(i_b, dyn_state, constraint_state, rigid_info, rigid_config)
         else:
             constraint_state.improved[i_b] = False
 
