@@ -1528,4 +1528,6 @@ class JITRenderer:
     def read_color_buf(self, weight, height, rgba):
         if self._read_color_buf is None:
             self.gen_func_ptr()
+        # The buffer is tightly packed, while GL pads every row to 4 bytes by default, which overruns it for RGB rows
+        GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1)
         return self._read_color_buf(weight, height, rgba, self.gl.wrapper_instance)
