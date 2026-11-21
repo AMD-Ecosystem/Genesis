@@ -26,6 +26,7 @@ import genesis.utils.simt as su
 from genesis.engine.solvers.rigid.abd.misc import func_list_item, func_list_range_start
 from genesis.engine.solvers.rigid.data import DynState, RigidInfo
 
+from . import monolith_amdgpu
 from . import solver as constraint_solver
 from .data import ConstraintState
 
@@ -971,7 +972,15 @@ def func_linesearch_islands_serial(
 
     is_moved = False
     if qd.static(rigid_config.is_single_island):
-        func_mv_jv_dense(i_b, constraint_state, rigid_info)
+        if qd.static(monolith_amdgpu.mono_mv_cap(rigid_config, constraint_state.nt_H) > 0):
+            # AMDGPU: the search direction in registers (see monolith_amdgpu.func_mv_jv_dense_regs)
+            N_MV = qd.static(monolith_amdgpu.mono_mv_cap(rigid_config, constraint_state.nt_H))
+            if monolith_amdgpu.func_mass_blocks_full(i_b, rigid_info, N_MV):
+                monolith_amdgpu.func_mv_jv_dense_regs(i_b, constraint_state, rigid_info, N_MV)
+            else:
+                func_mv_jv_dense(i_b, constraint_state, rigid_info)
+        else:
+            func_mv_jv_dense(i_b, constraint_state, rigid_info)
         is_moved = func_search_single_island(
             i_b, 0, 1, dyn_state, constraint_state, rigid_info, rigid_config, is_coop=False
         )
