@@ -1974,3 +1974,27 @@ def test_transparent_surfaces_show_what_lies_behind_them(renderer, show_viewer):
     patch_blue_across = centre_patch(PARKED, (-0.6, 0.0, 0.5))
     patch_pair_across = centre_patch((0.6, 0.0, 0.5), (-0.6, 0.0, 0.5))
     assert_allclose(patch_pair_across, patch_blue_across + (1.0 - ALPHA) * patch_red_across, atol=1.0)
+
+
+@pytest.mark.required
+@pytest.mark.parametrize("renderer_type", [RENDERER_TYPE.RASTERIZER])
+def test_rgb_readback_width_not_multiple_of_four(renderer):
+    # An RGB row of 106 pixels is 318 bytes, not a multiple of the default 4-byte row alignment of the GL readback
+    scene = gs.Scene(
+        renderer=renderer,
+        show_viewer=False,
+        show_FPS=False,
+    )
+    camera = scene.add_camera(
+        res=(106, 60),
+        pos=(0.0, 0.0, 2.0),
+        lookat=(0.0, 0.0, 0.0),
+        GUI=False,
+    )
+    scene.build()
+
+    rgb, *_ = camera.render(rgb=True)
+    rgb = tensor_to_array(rgb)
+    assert rgb.shape == (60, 106, 3)
+    # Nothing is in view, so every row must hold the background color, unsheared
+    assert_equal(rgb, np.broadcast_to(rgb[0, 0], rgb.shape))
