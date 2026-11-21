@@ -1289,3 +1289,65 @@ def test_cholesky_tiling_large_shared_memory(show_viewer):
 
     scene.step()
     assert not scene.get_error_envs_mask().any()
+
+
+@pytest.mark.required
+# The AMDGPU paths are compiled in performance mode only, above the cooperative bound, which a core count of 1 brings
+# down to a few envs as in test_monolith_seed_oversaturated.
+@pytest.mark.performance_mode(True)
+@pytest.mark.parametrize("backend", [gs.gpu])
+def test_amdgpu_register_mass_factor(monkeypatch, show_viewer):
+    """The register-resident mass factor fused with the smooth acceleration solve on AMDGPU.
+
+    100 envs span a full block of 64 envs and a partial one. The envs start from distinct joint positions, then from the
+    same ones permuted across the batch: the result of an env must not depend on its slot.
+    """
+    import genesis.engine.solvers.rigid.rigid_solver as rigid_solver
+    from genesis.engine.solvers.rigid.data import RigidConfig
+    from genesis.engine.solvers.rigid.abd import mass_factor_amdgpu
+
+    if gs.backend != gs.amdgpu:
+        pytest.skip("AMDGPU-only path.")
+    monkeypatch.setattr(rigid_solver, "get_gpu_core_count", lambda: 1)
+    # Pin the monolith arm, which the performance dispatch could otherwise switch between the two rollouts
+    _orig_config_init = RigidConfig.__init__
+
+    def _force_monolith(self, *args, **kwargs):
+        kwargs["prefer_decomposed_solver"] = 0
+        _orig_config_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(RigidConfig, "__init__", _force_monolith)
+
+    scene = gs.Scene(
+        show_viewer=show_viewer,
+    )
+    scene.add_entity(gs.morphs.Plane())
+    robot = scene.add_entity(
+        gs.morphs.URDF(
+            file="urdf/go2/urdf/go2.urdf",
+            pos=(0.0, 0.0, 0.5),
+        ),
+    )
+    n_envs = 100
+    scene.build(n_envs=n_envs)
+    solver = scene.rigid_solver
+    # Guard against the test silently ceasing to exercise the AMDGPU path
+    assert mass_factor_amdgpu.fused_solve_cap(solver.rigid_config, solver.rigid_info.mass_mat_L, False) > 0
+    rng = np.random.default_rng(0)
+    dofs_idx = np.arange(6, robot.n_dofs)
+    init_pos = tensor_to_array(robot.get_dofs_position(dofs_idx_local=dofs_idx))
+    init_pos = init_pos + rng.uniform(-0.1, 0.1, size=init_pos.shape)
+    perm = rng.permutation(n_envs)
+    results = []
+    for order in (np.arange(n_envs), perm):
+        scene.reset()
+        robot.set_dofs_position(init_pos[order], dofs_idx_local=dofs_idx)
+        for _ in range(60):
+            scene.step()
+        results.append((tensor_to_array(robot.get_qpos()), tensor_to_array(robot.get_dofs_velocity())))
+    (qpos, vel), (qpos_perm, vel_perm) = results
+    assert np.isfinite(qpos).all() and np.isfinite(vel).all()
+    # The robot fell onto the plane and stands on it
+    assert ((qpos[:, 2] > 0.05) & (qpos[:, 2] < 0.5)).all()
+    assert_equal(qpos_perm, qpos[perm])
+    assert_equal(vel_perm, vel[perm])
