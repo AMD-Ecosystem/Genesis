@@ -21,6 +21,8 @@ subtrees:
 
 - caption: About
   entries:
+  - url: https://rocm.blogs.amd.com/artificial-intelligence/rocm-genesis-quadrants/README.html
+    title: ROCm Quadrants and Genesis blog
   - url: https://genesis.ai/blog/the-role-of-simulation-in-scalable-robotics-genesis-world-10-and-the-path-forward
     title: Genesis World blog (upstream)
   - url: https://github.com/AMD-Ecosystem/Genesis/blob/docs/26.10/.github/contributing/PULL_REQUESTS.md
